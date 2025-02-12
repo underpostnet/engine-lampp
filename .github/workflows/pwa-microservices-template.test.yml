@@ -1,0 +1,30 @@
+name: Test
+on: [push]
+jobs:
+  test:
+    if: (github.repository == 'underpostnet/pwa-microservices-template') || (github.repository == 'underpostnet/pwa-microservices-template-ghpkg')
+    name: Node ${{ matrix.node }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        node-version: [21.x]
+        os: [ubuntu-latest]
+      #  os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v3
+
+      - name: Set Node.js version
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Get npm root
+        run: sudo npm root -g
+
+      - name: Install underpost cli
+        run: sudo npm install -g underpost
+
+      - name: Run test
+        run: sudo underpost test

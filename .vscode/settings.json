@@ -1,0 +1,112 @@
+{
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.formatOnSave": true,
+  "explorer.compactFolders": false,
+  "javascript.preferences.importModuleSpecifierEnding": "js",
+  "[javascript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[python]": {
+    "editor.defaultFormatter": "ms-python.python"
+  },
+  "cSpell.words": [
+    "ANAME",
+    "browserconfig",
+    "Bymyelectrics",
+    "certbot",
+    "certonly",
+    "changefreq",
+    "chebyshev",
+    "Cids",
+    "Contracultura",
+    "cooldown",
+    "cryptokoyn",
+    "cyberia",
+    "cyberiaonline",
+    "dbname",
+    "dists",
+    "DOGMADUAL",
+    "dondominio",
+    "dont",
+    "fileupload",
+    "fontawesome",
+    "fortawesome",
+    "gameplay",
+    "googlebot",
+    "Hexa",
+    "htdocs",
+    "htmls",
+    "inet",
+    "inlt",
+    "ipfs",
+    "Itemledger",
+    "jsonld",
+    "lampp",
+    "loadingio",
+    "Longname",
+    "metanarrative",
+    "Microdata",
+    "minami",
+    "MMORPG",
+    "mongosh",
+    "mysqldump",
+    "neodrag",
+    "nexodev",
+    "pathfinding",
+    "Pixi",
+    "plantuml",
+    "privkey",
+    "runas",
+    "Scatterplot",
+    "sortablejs",
+    "supervisord",
+    "Tokenomics",
+    "underpost",
+    "Unequip",
+    "uuidv",
+    "Valkey",
+    "webroot",
+    "xampp",
+    "xfwd",
+    "youtu"
+  ],
+  "[php]": {
+    "editor.defaultFormatter": "bmewburn.vscode-intelephense-client"
+  },
+  "[xml]": {
+    "editor.defaultFormatter": "redhat.vscode-xml"
+  },
+  "docwriter.style": "Auto-detect",
+  "docwriter.progress.trackFunctions": false,
+  "docwriter.progress.trackMethods": false,
+  "files.exclude": {
+    "**/.git": true, // this is a default value
+    "**/.DS_Store": true, // this is a default value
+
+    "**/node_modules": true, // this excludes all folders
+    // named "node_modules" from
+    // the explore tree
+
+    // alternative version
+    "node_modules": true, // this excludes the folder
+    // only from the root of
+    // your workspace
+    "public": true,
+    "engine-private": true,
+    "conf": true,
+    "tmp": true,
+    "bkt": true,
+    "logs": true,
+    "build": true,
+    "coverage": true,
+    "prometheus_data": true,
+    "grafana_data": true,
+    ".nyc_output": true
+  },
+  "[solidity]": {
+    "editor.defaultFormatter": "JuanBlanco.solidity"
+  },
+  "[dockerfile]": {
+    "editor.defaultFormatter": "foxundermoon.shell-format"
+  }
+}
