@@ -1,8 +1,9 @@
 import fs from 'fs-extra';
-import { getCapVariableName } from '../src/server/conf.js';
 import { loggerFactory } from '../src/server/logger.js';
-import { shellCd, shellExec } from '../src/server/process.js';
+import { shellExec } from '../src/server/process.js';
 import dotenv from 'dotenv';
+import { getCapVariableName } from '../src/client/components/core/CommonJs.js';
+import { getPathsSSR } from '../src/server/conf.js';
 
 const baseConfPath = './engine-private/conf/dd-cron/.env.production';
 if (fs.existsSync(baseConfPath)) dotenv.config({ path: baseConfPath });
@@ -85,73 +86,44 @@ if (process.argv.includes('test')) {
   fs.copySync(`./engine-private/conf/${confName}`, `${basePath}/engine-private/conf/${confName}`);
 }
 
-const BuilderConf = {
-  'dd-core': {
-    apis: [
-      'blockchain',
-      'bot',
-      'core',
-      'cron',
-      'crypto',
-      'default',
-      'document',
-      'event',
-      'event-scheduler',
-      'file',
-      'healthcare-appointment',
-      'instance',
-      'ipfs',
-      'notification',
-      'test',
-      'user',
-      'user-group',
-    ],
-    clients: [
-      'bymyelectrics',
-      'chart',
-      'cryptokoyn',
-      'dogmadual',
-      'healthcare',
-      'itemledger',
-      'nexodev',
-      'underpost',
-      'chart',
-    ],
-  },
-  'dd-lampp': {
-    apis: [],
-    clients: [],
-  },
-};
-(() => {
-  for (const api of BuilderConf[confName].apis) {
-    {
-      const originPath = `./src/api/${api}`;
-      logger.info(`Build`, originPath);
-      fs.copySync(originPath, `${basePath}/src/api/${api}`);
-    }
-    {
-      const originPath = `./src/client/services/${api}`;
-      logger.info(`Build`, originPath);
-      fs.copySync(originPath, `${basePath}/src/client/services/${api}`);
+const { DefaultConf } = await import(`../conf.${confName}.js`);
+
+{
+  for (const host of Object.keys(DefaultConf.server)) {
+    for (const path of Object.keys(DefaultConf.server[host])) {
+      const apis = DefaultConf.server[host][path].apis;
+      if (apis)
+        for (const api of apis) {
+          {
+            const originPath = `./src/api/${api}`;
+            logger.info(`Build`, originPath);
+            fs.copySync(originPath, `${basePath}/src/api/${api}`);
+          }
+          {
+            const originPath = `./src/client/services/${api}`;
+            logger.info(`Build`, originPath);
+            fs.copySync(originPath, `${basePath}/src/client/services/${api}`);
+          }
+        }
     }
   }
-})();
-(async () => {
-  for (const client of BuilderConf[confName].clients) {
+}
+
+{
+  for (const client of Object.keys(DefaultConf.client)) {
     const capName = getCapVariableName(client);
+    for (const component of Object.keys(DefaultConf.client[client].components)) {
+      const originPath = `./src/client/components/${component}`;
+      if (fs.existsSync(originPath)) {
+        logger.info(`Build`, originPath);
+        fs.copySync(originPath, `${basePath}/src/client/components/${component}`);
+      }
+    }
     {
       const originPath = `./src/client/${capName}.index.js`;
       if (fs.existsSync(originPath)) {
         logger.info(`Build`, originPath);
         fs.copyFileSync(originPath, `${basePath}/src/client/${capName}.index.js`);
-      }
-    }
-    {
-      const originPath = `./src/client/components/${client}`;
-      if (fs.existsSync(originPath)) {
-        logger.info(`Build`, originPath);
-        fs.copySync(originPath, `${basePath}/src/client/components/${client}`);
       }
     }
     {
@@ -161,33 +133,19 @@ const BuilderConf = {
         fs.copySync(originPath, `${basePath}/src/client/public/${client}`);
       }
     }
-    {
-      const originPath = `./src/client/ssr/body/${capName}SplashScreen.js`;
+  }
+}
+
+{
+  for (const client of Object.keys(DefaultConf.ssr)) {
+    const ssrPaths = getPathsSSR(DefaultConf.ssr[client]);
+    for (const originPath of ssrPaths) {
       if (fs.existsSync(originPath)) {
         logger.info(`Build`, originPath);
-        fs.copyFileSync(originPath, `${basePath}/src/client/ssr/body/${capName}SplashScreen.js`);
-      }
-    }
-    {
-      const originPath = `./src/client/ssr/body/${capName}DefaultSplashScreen.js`;
-      if (fs.existsSync(originPath)) {
-        logger.info(`Build`, originPath);
-        fs.copyFileSync(originPath, `${basePath}/src/client/ssr/body/${capName}DefaultSplashScreen.js`);
-      }
-    }
-    {
-      const originPath = `./src/client/ssr/head/Pwa${capName}.js`;
-      if (fs.existsSync(originPath)) {
-        logger.info(`Build`, originPath);
-        fs.copyFileSync(originPath, `${basePath}/src/client/ssr/head/Pwa${capName}.js`);
-      }
-    }
-    {
-      const originPath = `./src/client/ssr/head/${capName}Scripts.js`;
-      if (fs.existsSync(originPath)) {
-        logger.info(`Build`, originPath);
-        fs.copyFileSync(originPath, `${basePath}/src/client/ssr/head/${capName}Scripts.js`);
+        fs.copySync(originPath, `${basePath}/${originPath}`);
       }
     }
   }
-})();
+
+  fs.copyFileSync(`./conf.${confName}.js`, `${basePath}/conf.js`);
+}
