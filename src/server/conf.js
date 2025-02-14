@@ -837,13 +837,10 @@ const restoreMacroDb = async (deployGroupId = '', deployId = null) => {
   }
 };
 
-const mergeBackUp = async (baseBackJsonPath, outputFilePath) => {
-  const names = JSON.parse(fs.readFileSync(baseBackJsonPath, 'utf8')).map((p) =>
-    p.replaceAll(`\\`, '/').replaceAll('C:/', '/').replaceAll('c:/', '/'),
-  );
+const mergeFile = async (parts = [], outputFilePath) => {
   await new Promise((resolve) => {
     splitFile
-      .mergeFiles(names, outputFilePath)
+      .mergeFiles(parts, outputFilePath)
       .then(() => {
         resolve();
       })
@@ -895,11 +892,13 @@ const getRestoreCronCmd = async (options = { host: '', path: '', conf: {}, deplo
       {
         if (process.argv.includes('cron')) {
           cmd = `mysql -u ${user} -p${password} ${name} < ${baseBackUpPath}/${currentBackupTimestamp}/${name}.sql`;
-          if (fs.existsSync(`${baseBackUpPath}/${currentBackupTimestamp}/${name}-parths.json`))
-            await mergeBackUp(
-              `${baseBackUpPath}/${currentBackupTimestamp}/${name}-parths.json`,
-              `${baseBackUpPath}/${currentBackupTimestamp}/${name}.sql`,
-            );
+          if (fs.existsSync(`${baseBackUpPath}/${currentBackupTimestamp}/${name}-parths.json`)) {
+            const names = JSON.parse(
+              fs.readFileSync(`${baseBackUpPath}/${currentBackupTimestamp}/${name}-parths.json`, 'utf8'),
+            ).map((p) => p.replaceAll(`\\`, '/').replaceAll('C:/', '/').replaceAll('c:/', '/'));
+
+            await mergeFile(names, `${baseBackUpPath}/${currentBackupTimestamp}/${name}.sql`);
+          }
         } else {
           cmd = `mysql -u ${user} -p${password} ${name} < ${
             backupPath ? backupPath : `./engine-private/sql-backups/${name}.sql`
@@ -910,15 +909,23 @@ const getRestoreCronCmd = async (options = { host: '', path: '', conf: {}, deplo
                 backupPath ? backupPath.split('/').slice(0, -1).join('/') : `./engine-private/sql-backups`
               }/${name}-parths.json`,
             )
-          )
-            await mergeBackUp(
-              `${
-                backupPath ? backupPath.split('/').slice(0, -1).join('/') : `./engine-private/sql-backups`
-              }/${name}-parths.json`,
+          ) {
+            const names = JSON.parse(
+              fs.readFileSync(
+                `${
+                  backupPath ? backupPath.split('/').slice(0, -1).join('/') : `./engine-private/sql-backups`
+                }/${name}-parths.json`,
+                'utf8',
+              ),
+            ).map((p) => p.replaceAll(`\\`, '/').replaceAll('C:/', '/').replaceAll('c:/', '/'));
+
+            await mergeFile(
+              names,
               `${
                 backupPath ? backupPath.split('/').slice(0, -1).join('/') : `./engine-private/sql-backups`
               }/${name}.sql`,
             );
+          }
         }
       }
       break;
@@ -990,6 +997,31 @@ const maintenanceMiddleware = (req, res, port, proxyRouter) => {
   }
 };
 
+const splitFileFactory = async (name, _path) => {
+  const stats = fs.statSync(_path);
+  const maxSizeInBytes = 1024 * 1024 * 50; // 50 mb
+  const fileSizeInBytes = stats.size;
+  if (fileSizeInBytes > maxSizeInBytes) {
+    await new Promise((resolve) => {
+      splitFile
+        .splitFileBySize(_path, maxSizeInBytes) // 50 mb
+        .then((names) => {
+          fs.writeFileSync(
+            `${_path.split('/').slice(0, -1).join('/')}/${name}-parths.json`,
+            JSON.stringify(names, null, 4),
+            'utf8',
+          );
+          resolve();
+        })
+        .catch((err) => {
+          console.log('Error: ', err);
+          resolve();
+        });
+    });
+    fs.removeSync(_path);
+  }
+};
+
 const setUpProxyMaintenanceServer = ({ deployGroupId }) => {
   shellExec(`pm2 kill`);
   shellExec(`node bin/deploy valkey-service`);
@@ -1024,7 +1056,7 @@ export {
   deployRun,
   getCronBackUpFolder,
   getRestoreCronCmd,
-  mergeBackUp,
+  mergeFile,
   fixDependencies,
   getDeployId,
   maintenanceMiddleware,
@@ -1032,4 +1064,5 @@ export {
   getPathsSSR,
   buildKindPorts,
   buildPortProxyRouter,
+  splitFileFactory,
 };
