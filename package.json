@@ -1,8 +1,8 @@
 {
     "type": "module",
     "main": "src/index.js",
-    "name": "engine-lampp-private",
-    "version": "2.8.41",
+    "name": "engine-lampp",
+    "version": "2.8.42",
     "description": "pwa api rest template",
     "scripts": {
         "start": "env-cmd -f .env.production node --max-old-space-size=8192 src/server",
@@ -22,7 +22,7 @@
     },
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/underpostnet/pwa-microservices-template.git"
+        "url": "git+https://github.com/underpostnet/engine-lampp.git"
     },
     "keywords": [
         "engine",
@@ -33,9 +33,9 @@
     "author": "https://github.com/underpostnet",
     "license": "MIT",
     "bugs": {
-        "url": "https://github.com/underpostnet/pwa-microservices-template/issues"
+        "url": "https://github.com/underpostnet/engine-lampp/issues"
     },
-    "homepage": "https://github.com/underpostnet/pwa-microservices-template#readme",
+    "homepage": "https://github.com/underpostnet/engine-lampp#readme",
     "dependencies": {
         "@fortawesome/fontawesome-free": "^6.4.2",
         "@fullcalendar/rrule": "^6.1.15",
