@@ -35,6 +35,13 @@ logger.info('', {
 
 if (process.argv.includes('info')) process.exit(0);
 
+if (process.argv.includes('clean')) {
+  if (fs.existsSync(`${basePath}/images`)) fs.copySync(`${basePath}/images`, `./images`);
+  shellExec(`cd ${basePath} && git checkout .`);
+  shellExec(`cd ${basePath} && git clean -f -d`);
+  process.exit(0);
+}
+
 if (process.argv.includes('proxy')) {
   const env = process.argv.includes('development') ? 'development' : 'production';
   process.env.NODE_ENV = env;
@@ -280,4 +287,28 @@ const { DefaultConf } = await import(`../conf.${confName}.js`);
     JSON.stringify(packageJson, null, 4).replaceAll('pwa-microservices-template', repoName),
     'utf8',
   );
+
+  fs.copySync(`./src/cli`, `${basePath}/src/cli`);
+  if (!fs.existsSync(`${basePath}/images`)) fs.mkdirSync(`${basePath}/images`);
+
+  const env = process.argv.includes('development') ? 'development' : 'production';
+
+  // remove engine-private of .dockerignore for local testing
+
+  {
+    fs.removeSync(`${basePath}/manifests/deployment`);
+
+    if (!fs.existsSync(`./manifests/deployment/${confName}-${env}`))
+      fs.mkdirSync(`./manifests/deployment/${confName}-${env}`);
+
+    for (const file of ['Dockerfile', 'proxy.yaml', 'deployment.yaml', 'secret.yaml']) {
+      if (fs.existsSync(`./engine-private/conf/${confName}/build/${env}/${file}`)) {
+        fs.copyFileSync(`./engine-private/conf/${confName}/build/${env}/${file}`, `${basePath}/${file}`);
+        fs.copyFileSync(
+          `./engine-private/conf/${confName}/build/${env}/${file}`,
+          `./manifests/deployment/${confName}-${env}/${file}`,
+        );
+      }
+    }
+  }
 }

@@ -84,7 +84,6 @@ const format = (meta) =>
  * @memberof Logger
  */
 const setUpInfo = async (logger = new winston.Logger()) => {
-  logger.info('npm_package_version', process.env.npm_package_version);
   logger.info('argv', process.argv);
   logger.info('platform', process.platform);
   logger.info('env', process.env.NODE_ENV);
@@ -112,10 +111,10 @@ const loggerFactory = (meta = { url: '' }) => {
     // Allow the use the terminal to print the messages
     new winston.transports.Console(),
     // Allow to print all the error level messages inside the error.log file
-    new winston.transports.File({
-      filename: `logs/${meta}/error.log`,
-      level: 'error',
-    }),
+    // new winston.transports.File({
+    //   filename: `logs/${meta}/error.log`,
+    //   level: 'error',
+    // }),
     // Allow to print all the error message inside the all.log file
     // (also the error log that are also printed inside the error.log(
     new winston.transports.File({ filename: `logs/${meta}/all.log` }),
@@ -186,11 +185,11 @@ const underpostASCI = () => `
 ░╚═════╝░╚═╝░░╚══╝╚═════╝░╚══════╝╚═╝░░╚═╝╚═╝░░░░░░╚════╝░╚═════╝░░░░╚═╝░░░
                                                 `;
 
-const actionInitLog = (version = '0.0.0') =>
+const actionInitLog = () =>
   console.log(
     underpostASCI() +
       `
-    ${version} https://www.nexodev.org/docs
+    https://www.nexodev.org/docs
 `,
   );
 

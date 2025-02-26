@@ -25,16 +25,8 @@ let name = getCapVariableName(file.split('.')[0]);
 logger.info('File metadata', { path, file, ext, name });
 
 try {
-  // throw '';
-  // let cmd;
   let content = '';
   switch (type) {
-    case 'create-js-module':
-      // node bin/file './src/client/components/core/progress bar.js'
-      content = `const ${name} = {}; export { ${name} }`;
-      setTimeout(() => shellExec(`prettier --write ${buildPath}`));
-      break;
-
     case 'update-template':
     case 'copy-src':
       console.log({ rawPath, toPath });
@@ -77,10 +69,9 @@ try {
         fs.copySync(`./.github`, `../pwa-microservices-template/.github`);
         fs.copySync(`./src/client/public/default`, `../pwa-microservices-template/src/client/public/default`);
 
-        shellCd('../pwa-microservices-template');
-        for (const deletePath of ['README.md', 'package-lock.json', 'package.json']) {
-          shellExec(`git checkout ${deletePath}`);
-        }
+        for (const checkoutPath of ['README.md', 'package-lock.json', 'package.json'])
+          shellExec(`cd ../pwa-microservices-template && git checkout ${checkoutPath}`);
+
         for (const deletePath of [
           '.github/workflows/coverall.yml',
           '.github/workflows/docker-image.yml',
@@ -94,12 +85,23 @@ try {
         ]) {
           fs.removeSync('../pwa-microservices-template/' + deletePath);
         }
-        shellCd('../engine');
         const originPackageJson = JSON.parse(fs.readFileSync('./package.json', 'utf8'));
         const templatePackageJson = JSON.parse(fs.readFileSync('../pwa-microservices-template/package.json', 'utf8'));
+
+        const name = templatePackageJson.name;
+        const description = templatePackageJson.description;
+        const dev = templatePackageJson.scripts.dev;
+        const build = templatePackageJson.scripts.build;
+
         templatePackageJson.dependencies = originPackageJson.dependencies;
         templatePackageJson.devDependencies = originPackageJson.devDependencies;
         templatePackageJson.version = originPackageJson.version;
+        templatePackageJson.scripts = originPackageJson.scripts;
+        templatePackageJson.name = name;
+        templatePackageJson.description = description;
+        templatePackageJson.scripts.dev = dev;
+        templatePackageJson.scripts.build = build;
+        delete templatePackageJson.scripts['update-template'];
         fs.writeFileSync(
           '../pwa-microservices-template/package.json',
           JSON.stringify(templatePackageJson, null, 4),
