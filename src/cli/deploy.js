@@ -35,6 +35,16 @@ class UnderpostDeploy {
       await Config.build(undefined, 'proxy', deployList);
       return buildPortProxyRouter(env === 'development' ? 80 : 443, buildProxyRouter());
     },
+    deploymentYamlServiceFactory({ deployId, env, port, deploymentVersions }) {
+      return deploymentVersions
+        .map(
+          (version, i) => `    - name: ${deployId}-${env}-${version}-service
+          port: ${port}
+          weight: ${i === 0 ? 100 : 0}
+    `,
+        )
+        .join('');
+    },
     deploymentYamlPartsFactory({ deployId, env, suffix }) {
       return `apiVersion: apps/v1
 kind: Deployment
@@ -81,7 +91,7 @@ spec:
   ports:
 {{ports}}  type: LoadBalancer`;
     },
-    async buildManifest(deployList, env, version) {
+    async buildManifest(deployList, env, options) {
       for (const _deployId of deployList.split(',')) {
         const deployId = _deployId.trim();
         if (!deployId) continue;
@@ -92,19 +102,20 @@ spec:
         const router = await UnderpostDeploy.API.routerFactory(deployId, env);
         const pathPortAssignmentData = pathPortAssignmentFactory(router, confServer);
         const { fromPort, toPort } = deployRangePortFactory(router);
-
+        const deploymentVersions =
+          options.versions && typeof options.versions === 'string' ? options.versions.split(',') : ['blue', 'green'];
         fs.mkdirSync(`./engine-private/conf/${deployId}/build/${env}`, { recursive: true });
         if (env === 'development') fs.mkdirSync(`./manifests/deployment/${deployId}-${env}`, { recursive: true });
 
         logger.info('port range', { deployId, fromPort, toPort });
 
         let deploymentYamlParts = '';
-        for (const deploymentColor of ['blue', 'green']) {
+        for (const deploymentVersion of deploymentVersions) {
           deploymentYamlParts += `---
 ${UnderpostDeploy.API.deploymentYamlPartsFactory({
   deployId,
   env,
-  suffix: deploymentColor,
+  suffix: deploymentVersion,
 }).replace('{{ports}}', buildKindPorts(fromPort, toPort))}
 `;
         }
@@ -155,12 +166,13 @@ spec:
         - prefix: ${path}
       enableWebsockets: true
       services:
-        - name: ${deployId}-${env}-${'blue'}-service
-          port: ${port}
-          weight: 100
-        - name: ${deployId}-${env}-${'green'}-service
-          port: ${port}
-          weight: 0`;
+    ${UnderpostDeploy.API.deploymentYamlServiceFactory({
+      deployId,
+      env,
+      port,
+      deploymentVersions:
+        options.traffic && typeof options.traffic === 'string' ? options.traffic.split(',') : ['blue'],
+    })}`;
           }
         }
         const yamlPath = `./engine-private/conf/${deployId}/build/${env}/proxy.yaml`;
@@ -192,7 +204,8 @@ spec:
         infoUtil: false,
         expose: false,
         cert: false,
-        version: '',
+        versions: '',
+        traffic: '',
         dashboardUpdate: false,
       },
     ) {
@@ -205,7 +218,7 @@ kubectl scale statefulsets <stateful-set-name> --replicas=<new-replicas>
       if (deployList === 'dd' && fs.existsSync(`./engine-private/deploy/dd.router`))
         deployList = fs.readFileSync(`./engine-private/deploy/dd.router`, 'utf8');
       if (options.sync) UnderpostDeploy.API.sync(deployList);
-      if (options.buildManifest === true) await UnderpostDeploy.API.buildManifest(deployList, env, options.version);
+      if (options.buildManifest === true) await UnderpostDeploy.API.buildManifest(deployList, env, options);
       if (options.infoRouter === true) logger.info('router', await UnderpostDeploy.API.routerFactory(deployList, env));
       if (options.dashboardUpdate === true) await UnderpostDeploy.API.updateDashboardData(deployList, env, options);
       if (options.infoRouter === true) return;
