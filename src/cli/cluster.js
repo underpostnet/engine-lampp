@@ -14,6 +14,7 @@ class UnderpostCluster {
         mongodb: false,
         mongodb4: false,
         mariadb: false,
+        postgresql: false,
         valkey: false,
         full: false,
         info: false,
@@ -121,7 +122,7 @@ class UnderpostCluster {
         if (options.pullImage === true) {
           // kubectl patch statefulset service-valkey --type='json' -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/image", "value":"valkey/valkey:latest"}]'
           // kubectl patch statefulset service-valkey -p '{"spec":{"template":{"spec":{"containers":[{"name":"service-valkey","imagePullPolicy":"Never"}]}}}}'
-          // shellExec(`docker pull valkey/valkey`);
+          shellExec(`docker pull valkey/valkey`);
           // shellExec(`sudo kind load docker-image valkey/valkey`);
           // shellExec(`sudo podman pull docker.io/valkey/valkey:latest`);
           // shellExec(`podman save -o valkey.tar valkey/valkey`);
@@ -141,6 +142,12 @@ class UnderpostCluster {
         );
         shellExec(`kubectl delete statefulset mariadb-statefulset`);
         shellExec(`kubectl apply -k ${underpostRoot}/manifests/mariadb`);
+      }
+      if (options.full === true || options.postgresql === true) {
+        shellExec(
+          `sudo kubectl create secret generic postgres-secret --from-file=password=/home/dd/engine/engine-private/postgresql-password`,
+        );
+        shellExec(`kubectl apply -k ./manifests/postgresql`);
       }
       if (options.mongodb4 === true) {
         if (options.pullImage === true) {
