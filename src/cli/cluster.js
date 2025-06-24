@@ -27,6 +27,7 @@ class UnderpostCluster {
         infoCapacityPod: false,
         istio: false,
         pullImage: false,
+        dedicatedGpu: false,
       },
     ) {
       // sudo dnf update
@@ -106,18 +107,26 @@ class UnderpostCluster {
           // shellExec(
           //   `wget https://raw.githubusercontent.com/projectcalico/calico/v3.25.0/manifests/custom-resources.yaml`,
           // );
-          shellExec(`sudo kubectl apply -f ./manifests/kubeadm-calico-config.yaml`);
+          shellExec(`sudo kubectl apply -f ${underpostRoot}/manifests/kubeadm-calico-config.yaml`);
           shellExec(`sudo systemctl restart containerd`);
         } else {
           shellExec(`sudo systemctl restart containerd`);
-          shellExec(
-            `cd ${underpostRoot}/manifests && kind create cluster --config kind-config${
-              options?.dev === true ? '-dev' : ''
-            }.yaml`,
-          );
+          if (options.full === true || options.dedicatedGpu === true) {
+            shellExec(`cd ${underpostRoot}/manifests && kind create cluster --config kind-config-cuda.yaml`);
+          } else {
+            shellExec(
+              `cd ${underpostRoot}/manifests && kind create cluster --config kind-config${
+                options?.dev === true ? '-dev' : ''
+              }.yaml`,
+            );
+          }
           shellExec(`sudo chown $(id -u):$(id -g) $HOME/.kube/config**`);
         }
       } else logger.warn('Cluster already initialized');
+
+      if (options.full === true || options.dedicatedGpu === true) {
+        shellExec(`node ${underpostRoot}/bin/deploy kubeflow-spark-operator`);
+      }
 
       if (options.full === true || options.valkey === true) {
         if (options.pullImage === true) {
@@ -145,7 +154,7 @@ class UnderpostCluster {
         shellExec(
           `sudo kubectl create secret generic postgres-secret --from-file=password=/home/dd/engine/engine-private/postgresql-password`,
         );
-        shellExec(`kubectl apply -k ./manifests/postgresql`);
+        shellExec(`kubectl apply -k ${underpostRoot}/manifests/postgresql`);
       }
       if (options.mongodb4 === true) {
         if (options.pullImage === true) {
