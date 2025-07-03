@@ -83,10 +83,14 @@ class UnderpostCluster {
         shellExec(`sudo kubectl api-resources`);
         return;
       }
+      const alrreadyCluster =
+        UnderpostDeploy.API.get('kube-apiserver-kind-control-plane')[0] ||
+        UnderpostDeploy.API.get('calico-kube-controllers')[0];
 
       if (
-        (!options.istio && !UnderpostDeploy.API.get('kube-apiserver-kind-control-plane')[0]) ||
-        (options.istio === true && !UnderpostDeploy.API.get('calico-kube-controllers')[0])
+        !alrreadyCluster &&
+        ((!options.istio && !UnderpostDeploy.API.get('kube-apiserver-kind-control-plane')[0]) ||
+          (options.istio === true && !UnderpostDeploy.API.get('calico-kube-controllers')[0]))
       ) {
         shellExec(`sudo setenforce 0`);
         shellExec(`sudo sed -i 's/^SELINUX=enforcing$/SELINUX=permissive/' /etc/selinux/config`);
@@ -101,7 +105,9 @@ class UnderpostCluster {
         shellExec(`sudo swapoff -a; sudo sed -i '/swap/d' /etc/fstab`);
         if (options.istio === true) {
           shellExec(`sysctl net.bridge.bridge-nf-call-iptables=1`);
-          shellExec(`sudo kubeadm init --pod-network-cidr=192.168.0.0/16`);
+          shellExec(
+            `sudo kubeadm init --pod-network-cidr=192.168.0.0/16 --control-plane-endpoint="${os.hostname()}:6443"`,
+          );
           shellExec(`sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config`);
           shellExec(`sudo chown $(id -u):$(id -g) $HOME/.kube/config**`);
           // https://docs.tigera.io/calico/latest/getting-started/kubernetes/quickstart
@@ -379,6 +385,14 @@ class UnderpostCluster {
       // Step 14: Remove the 'kind' Docker network.
       // This cleans up any network bridges or configurations specifically created by Kind.
       // shellExec(`docker network rm kind`);
+
+      // Reset kubelet
+      shellExec(`sudo systemctl stop kubelet`);
+      shellExec(`sudo rm -rf /etc/kubernetes/*`);
+      shellExec(`sudo rm -rf /var/lib/kubelet/*`);
+      shellExec(`sudo rm -rf /etc/cni/net.d/*`);
+      shellExec(`sudo systemctl daemon-reload`);
+      shellExec(`sudo systemctl start kubelet`);
     },
 
     getResourcesCapacity(kubeadm = false) {
