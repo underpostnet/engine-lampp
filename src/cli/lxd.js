@@ -18,6 +18,8 @@ class UnderpostLxd {
         createVm: '',
         infoVm: '',
         rootSize: '',
+        joinNode: '',
+        expose: '',
       },
     ) {
       const npmRoot = getNpmRootPath();
@@ -62,16 +64,43 @@ ipv6.address=none`);
         let flag = '';
         if (options.control === true) {
           flag = ' -s -- --kubeadm';
+          shellExec(`lxc exec ${options.initVm} -- bash -c 'mkdir -p /home/dd/engine'`);
+          shellExec(`lxc file push /home/dd/engine/engine-private ${options.initVm}/home/dd/engine --recursive`);
         } else if (options.worker == true) {
           flag = ' -s -- --worker';
         }
         pbcopy(`cat ${underpostRoot}/manifests/lxd/underpost-setup.sh | lxc exec ${options.initVm} -- bash${flag}`);
+      }
+      if (options.joinNode && typeof options.joinNode === 'string') {
+        const [workerNode, controlNode] = options.joinNode.split(',');
+        const token = shellExec(
+          `echo "$(lxc exec ${controlNode} -- bash -c 'sudo kubeadm token create --print-join-command')"`,
+          { stdout: true },
+        );
+        shellExec(`lxc exec ${workerNode} -- bash -c '${token}'`);
       }
       if (options.infoVm && typeof options.infoVm === 'string') {
         shellExec(`lxc config show ${options.infoVm}`);
         shellExec(`lxc info --show-log ${options.infoVm}`);
         shellExec(`lxc info ${options.infoVm}`);
         shellExec(`lxc list ${options.infoVm}`);
+      }
+      if (options.expose && typeof options.expose === 'string') {
+        const [controlNode, ports] = options.expose.split(':');
+        console.log({ controlNode, ports });
+        const protocols = ['tcp', 'udp'];
+        const hostIp = getLocalIPv4Address();
+        const vmIp = shellExec(
+          `lxc list ${controlNode} --format json | jq -r '.[0].state.network.enp5s0.addresses[] | select(.family=="inet") | .address'`,
+          { stdout: true },
+        ).trim();
+        for (const port of ports.split(',')) {
+          for (const protocol of protocols) {
+            shellExec(
+              `lxc config device add ${controlNode} ${controlNode}-port-${port} proxy listen=${protocol}:${hostIp}:${port} connect=${protocol}:${vmIp}:${port} nat=true`,
+            );
+          }
+        }
       }
     },
   };
