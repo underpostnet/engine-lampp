@@ -40,11 +40,23 @@ class UnderpostLxd {
         shellExec(`lxc cluster list`);
       }
       if (options.createVirtualNetwork === true) {
-        shellExec(`lxc network create lxdbr0 \
+        const networkName = 'lxdbr0';
+        shellExec(`lxc network create ${networkName} \
 ipv4.address=10.250.250.1/24 \
 ipv4.nat=true \
 ipv4.dhcp=true \
 ipv6.address=none`);
+        shellExec(`lxc network set ${networkName} ipv4.dhcp.ranges=10.250.250.2-10.250.250.254`);
+        shellExec(`lxc network set ${networkName} user.network-config='version: 2
+ethernets:
+  enp5s0:
+    dhcp4: no
+    addresses:
+      - 10.250.250.100/24
+    gateway4: 10.250.250.1
+    nameservers:
+      addresses: [1.1.1.1,8.8.8.8]'`);
+        shellExec(`lxc network show ${networkName}`);
       }
       if (options.createAdminProfile === true) {
         pbcopy(`lxc profile create admin-profile`);
