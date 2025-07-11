@@ -81,8 +81,9 @@ program
   .argument('operator', `Options: ${Object.keys(Underpost.env)}`)
   .argument('[key]', 'Config key')
   .argument('[value]', 'Config value')
+  .option('--plain', 'Print plain value')
   .description(`Manage configuration, operators`)
-  .action((...args) => Underpost.env[args[0]](args[1], args[2]));
+  .action((...args) => Underpost.env[args[0]](args[1], args[2], args[3]));
 
 program
   .command('root')
@@ -305,8 +306,12 @@ program
 
 program
   .command('baremetal')
-  .option('--control-server-init-db', 'Setup database control server')
-  .option('--control-server-reset', 'Reset baremetal control server')
+  .option('--control-server-install', 'Install baremetal control server')
+  .option('--control-server-init-db', 'Setup database baremetal control server')
+  .option('--control-server-init', 'Init baremetal control server')
+  .option('--control-server-uninstall', 'Uninstall baremetal control server')
+  .option('--control-server-stop', 'Stop baremetal control server')
+  .option('--control-server-start', 'Start baremetal control server')
   .option('--dev', 'Set dev context env')
   .description('Baremetal management')
   .action(UnderpostBaremetal.API.callback);
