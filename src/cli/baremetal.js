@@ -27,13 +27,19 @@ class UnderpostBaremetal {
       dotenv.config({ path: `${getUnderpostRootPath()}/.env`, override: true });
       const npmRoot = getNpmRootPath();
       const underpostRoot = options?.dev === true ? '.' : `${npmRoot}/underpost`;
-      workflowId = workflowId ?? null;
+      workflowId = workflowId ?? 'rpi4mb';
       hostname = hostname ?? workflowId;
       ipAddress = ipAddress ?? getLocalIPv4Address();
 
       const dbProviderId = 'postgresql-17';
 
-      logger.info('Baremetal callback', { args: { hostname, ipAddress, workflowId }, options });
+      const callbackMetaData = {
+        args: { hostname, ipAddress, workflowId },
+        options,
+        runnerHost: { architecture: UnderpostBaremetal.API.getHostArch() },
+      };
+
+      logger.info('Baremetal callback', callbackMetaData);
 
       const nfsHostPath = `${process.env.NFS_EXPORT_PATH}/${hostname}`;
 
@@ -98,52 +104,62 @@ class UnderpostBaremetal {
         shellExec(`mkdir -p ${nfsHostPath}`);
         shellExec(`sudo chown -R root:root ${nfsHostPath}`);
 
-        {
-          let cmd;
-          switch (workflowId) {
-            case 'rpi4mb':
-              cmd = [
-                `sudo debootstrap`,
-                `--arch=arm64`,
-                `--variant=minbase`,
-                `--foreign`, // arm64 on amd64
-                [`noble`, `jammy`][0],
-                nfsHostPath,
-                `http://ports.ubuntu.com/ubuntu-ports/`,
-              ];
-              break;
+        let debootstrapArch;
 
-            default:
-              break;
-          }
-          shellExec(cmd.join(' '));
+        {
+          const { architecture, name } = UnderpostBaremetal.API.workflowsConfig[workflowId].debootstrap.image;
+
+          debootstrapArch = architecture;
+
+          shellExec(
+            [
+              `sudo debootstrap`,
+              `--arch=${architecture}`,
+              `--variant=minbase`,
+              `--foreign`,
+              name,
+              nfsHostPath,
+              `http://ports.ubuntu.com/ubuntu-ports/`,
+            ].join(' '),
+          );
         }
 
         shellExec(`sudo podman create --name extract multiarch/qemu-user-static`);
         shellExec(`podman ps -a`);
 
-        switch (workflowId) {
-          case 'rpi4mb':
-            shellExec(`sudo podman cp extract:/usr/bin/qemu-aarch64-static ${nfsHostPath}/usr/bin/`);
-            break;
+        if (architecture !== callbackMetaData.runnerHost.architecture)
+          switch (debootstrapArch) {
+            case 'arm64':
+              shellExec(`sudo podman cp extract:/usr/bin/qemu-aarch64-static ${nfsHostPath}/usr/bin/`);
+              break;
 
-          default:
-            break;
-        }
+            case 'amd64':
+              shellExec(`sudo podman cp extract:/usr/bin/qemu-x86_64-static ${nfsHostPath}/usr/bin/`);
+              break;
+
+            default:
+              break;
+          }
 
         shellExec(`sudo podman rm extract`);
         shellExec(`podman ps -a`);
         shellExec(`file ${nfsHostPath}/bin/bash`); // expected: current arch executable identifier
 
-        switch (workflowId) {
-          case 'rpi4mb':
-            shellExec(`sudo chroot ${nfsHostPath} /usr/bin/qemu-aarch64-static /bin/bash <<'EOF'
+        if (architecture !== callbackMetaData.runnerHost.architecture)
+          switch (debootstrapArch) {
+            case 'arm64':
+              shellExec(`sudo chroot ${nfsHostPath} /usr/bin/qemu-aarch64-static /bin/bash <<'EOF'
 /debootstrap/debootstrap --second-stage
 EOF`);
-            break;
+              break;
 
-          default:
-            break;
+            default:
+              break;
+          }
+        else {
+          shellExec(`sudo chroot ${nfsHostPath} /bin/bash <<'EOF'
+/debootstrap/debootstrap --second-stage
+EOF`);
         }
         if (!isMounted) {
           UnderpostBaremetal.API.nfsMountCallback({ hostname, workflowId, mount: true });
@@ -172,6 +188,8 @@ EOF`);
           } else {
             if (mount === true) {
               shellExec(`sudo mount --${mountCmd} ${mountPath} ${hostMountPath}`);
+            } else {
+              logger.warn('Nfs path not mounted', mountPath);
             }
           }
         }
@@ -179,9 +197,28 @@ EOF`);
       return { isMounted };
     },
 
+    getHostArch() {
+      // `uname -m` returns e.g. 'x86_64' or 'aarch64'
+      const machine = shellExec('uname -m', { stdout: true }).trim();
+      if (machine === 'x86_64') return 'amd64';
+      if (machine === 'aarch64') return 'arm64';
+      throw new Error(`Unsupported host architecture: ${machine}`);
+    },
+
     workflowsConfig: {
       rpi4mb: {
-        architecture: 'arm64/ga-24.04',
+        debootstrap: {
+          image: {
+            architecture: 'arm64',
+            name: 'noble',
+          },
+        },
+        maas: {
+          image: {
+            architecture: 'arm64/ga-24.04',
+            name: 'ubuntu/noble',
+          },
+        },
         nfs: {
           mounts: {
             bind: ['/proc', '/sys', '/run'],
