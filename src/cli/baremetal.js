@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import { loggerFactory } from '../server/logger.js';
 import { getLocalIPv4Address } from '../server/dns.js';
 import fs from 'fs-extra';
+import { Downloader } from '../server/downloader.js';
 
 const logger = loggerFactory(import.meta);
 
@@ -38,7 +39,7 @@ class UnderpostBaremetal {
      * @param {boolean} [options.nfsSh=false] - Flag to chroot into the NFS environment for shell access.
      * @returns {void}
      */
-    callback(
+    async callback(
       workflowId,
       hostname,
       ipAddress,
@@ -65,23 +66,31 @@ class UnderpostBaremetal {
       // Set default values if not provided.
       workflowId = workflowId ?? 'rpi4mb';
       hostname = hostname ?? workflowId;
-      ipAddress = ipAddress ?? getLocalIPv4Address();
+      ipAddress = ipAddress ?? '192.168.1.192';
+
+      // Set default MAC address
+      let macAddress = '00:00:00:00:00:00';
 
       // Define the database provider ID.
       const dbProviderId = 'postgresql-17';
+
+      // Define the NFS host path based on the environment variable and hostname.
+      const nfsHostPath = `${process.env.NFS_EXPORT_PATH}/${hostname}`;
+
+      // Define the TFTP root path based on the environment variable and hostname.
+      const tftpRootPath = `${process.env.TFTP_ROOT}/${hostname}`;
 
       // Capture metadata for the callback execution, useful for logging and auditing.
       const callbackMetaData = {
         args: { hostname, ipAddress, workflowId },
         options,
-        runnerHost: { architecture: UnderpostBaremetal.API.getHostArch() },
+        runnerHost: { architecture: UnderpostBaremetal.API.getHostArch(), ip: getLocalIPv4Address() },
+        nfsHostPath,
+        tftpRootPath,
       };
 
       // Log the initiation of the baremetal callback with relevant metadata.
       logger.info('Baremetal callback', callbackMetaData);
-
-      // Define the NFS host path based on the environment variable and hostname.
-      const nfsHostPath = `${process.env.NFS_EXPORT_PATH}/${hostname}`;
 
       // Handle NFS shell access option.
       if (options.nfsSh === true) {
@@ -131,6 +140,7 @@ class UnderpostBaremetal {
         shellExec(`node ${underpostRoot}/bin/deploy ${dbProviderId} uninstall`);
       }
 
+      // Handle NFS mount operation.
       if (options.nfsMount === true) {
         UnderpostBaremetal.API.nfsMountCallback({ hostname, workflowId, mount: true });
       }
@@ -163,6 +173,7 @@ class UnderpostBaremetal {
         shellExec(`sudo rm -rf ${nfsHostPath}/*`);
         shellExec(`mkdir -p ${nfsHostPath}`);
         shellExec(`sudo chown -R root:root ${nfsHostPath}`);
+        shellExec(`sudo chmod 755 ${nfsHostPath}`);
 
         let debootstrapArch;
 
@@ -236,11 +247,71 @@ class UnderpostBaremetal {
         }
       }
 
+      let resources, machines;
+
+      if (options.commission === true || options.ls === true) {
+        resources = JSON.parse(
+          shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} boot-resources read`, {
+            silent: true,
+            stdout: true,
+          }),
+        ).map((o) => ({
+          id: o.id,
+          name: o.name,
+          architecture: o.architecture,
+        }));
+        if (options.ls === true) {
+          console.table(resources);
+        }
+        machines = JSON.parse(
+          shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machines read`, {
+            stdout: true,
+            silent: true,
+          }),
+        ).map((m) => ({
+          system_id: m.interface_set[0].system_id,
+          mac_address: m.interface_set[0].mac_address,
+          hostname: m.hostname,
+          status_name: m.status_name,
+        }));
+        if (options.ls === true) {
+          console.table(machines);
+        }
+      }
+
       // Handle commissioning tasks (placeholder for future implementation).
       if (options.commission === true) {
-        // TODO: Implement commissioning logic here. This might involve
-        // registering the machine with a control plane, running final
-        // configuration scripts, or performing validation checks.
+        shellExec(`sudo rm -rf ${tftpRootPath}`);
+        shellExec(`mkdir -p ${tftpRootPath}/pxe`);
+
+        for (const firmware of UnderpostBaremetal.API.workflowsConfig[workflowId].firmwares) {
+          const { url, gateway, subnet } = firmware;
+          if (url.match('.zip')) {
+            const name = url.split('/').pop().replace('.zip', '');
+            const path = `../${name}`;
+            if (!fs.existsSync(path)) {
+              await Downloader(url, `../${name}.zip`);
+              shellExec(`cd .. && mkdir ${name} && cd ${name} && unzip ../${name}.zip`);
+            }
+            shellExec(`sudo cp -a ${path}/* ${tftpRootPath}`);
+
+            if (gateway && subnet) {
+              fs.writeFileSync(
+                `${tftpRootPath}/boot_${name}.conf`,
+                UnderpostBaremetal.API.bootConfFactory({
+                  workflowId,
+                  tftpIp: callbackMetaData.runnerHost.ip,
+                  tftpPrefixStr: hostname,
+                  macAddress,
+                  clientIp: ipAddress,
+                  subnet,
+                  gateway,
+                }),
+                'utf8',
+              );
+            }
+          }
+        }
       }
     },
 
@@ -546,6 +617,59 @@ logdir /var/log/chrony
       },
     },
 
+    bootConfFactory({ workflowId, tftpIp, tftpPrefixStr, macAddress, clientIp, subnet, gateway }) {
+      switch (workflowId) {
+        case 'rpi4mb':
+          return `[all]
+BOOT_UART=0
+WAKE_ON_GPIO=1
+POWER_OFF_ON_HALT=0
+ENABLE_SELF_UPDATE=1
+DISABLE_HDMI=0
+NET_INSTALL_ENABLED=1
+DHCP_TIMEOUT=45000
+DHCP_REQ_TIMEOUT=4000
+TFTP_FILE_TIMEOUT=30000
+BOOT_ORDER=0x21
+
+# ─────────────────────────────────────────────────────────────
+# TFTP configuration
+# ─────────────────────────────────────────────────────────────
+
+# Custom TFTP prefix string (e.g., based on MAC address, no colons)
+#TFTP_PREFIX_STR=AA-BB-CC-DD-EE-FF/
+
+# Optional PXE Option43 override (leave commented if unused)
+#PXE_OPTION43="Raspberry Pi Boot"
+
+# DHCP client GUID (Option 97); 0x34695052 is the FourCC for Raspberry Pi 4
+#DHCP_OPTION97=0x34695052
+
+TFTP_IP=${tftpIp}
+TFTP_PREFIX=1
+TFTP_PREFIX_STR=${tftpPrefixStr}/
+
+# ─────────────────────────────────────────────────────────────
+# Manually override Ethernet MAC address
+# ─────────────────────────────────────────────────────────────
+
+MAC_ADDRESS=${macAddress}
+
+# OTP MAC address override
+#MAC_ADDRESS_OTP=0,1
+
+# ─────────────────────────────────────────────────────────────
+# Static IP configuration (bypasses DHCP completely)
+# ─────────────────────────────────────────────────────────────
+CLIENT_IP=${clientIp}
+SUBNET=${subnet}
+GATEWAY=${gateway}`;
+
+        default:
+          throw new Error('Boot conf factory invalid workflow ID:' + workflowId);
+      }
+    },
+
     /**
      * @property {object} workflowsConfig
      * @description Configuration for different baremetal provisioning workflows.
@@ -560,6 +684,13 @@ logdir /var/log/chrony
       rpi4mb: {
         systemProvisioning: 'ubuntu', // Specifies the system provisioning factory to use.
         kernelLibVersion: `6.8.0-41-generic`, // The kernel library version for this workflow.
+        firmwares: [
+          {
+            url: 'https://github.com/pftf/RPi4/releases/download/v1.41/RPi4_UEFI_Firmware_v1.41.zip',
+            gateway: '192.168.1.1',
+            subnet: '255.255.255.0',
+          },
+        ],
         chronyc: {
           timezone: 'America/New_York', // Timezone for Chrony configuration.
           chronyConfPath: `/etc/chrony/chrony.conf`, // Path to Chrony configuration file.
