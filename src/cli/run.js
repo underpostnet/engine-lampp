@@ -2,6 +2,7 @@ import { pbcopy, shellCd, shellExec } from '../server/process.js';
 import read from 'read';
 import { getNpmRootPath } from '../server/conf.js';
 import { loggerFactory } from '../server/logger.js';
+import UnderpostTest from './test.js';
 
 const logger = loggerFactory(import.meta);
 
@@ -43,12 +44,44 @@ class UnderpostRun {
       const { underpostRoot } = options;
       shellExec(`node ${underpostRoot}/bin/vs ${path}`);
     },
-    'tf-job': (path, options = UnderpostRun.DEFAULT_OPTION) => {
-      // hostPath:
-      //   path: /home/aida/files
-      //   type: File
-      // shellExec(`kubectl apply -f - <<EOF
-      //         EOF`);
+    'tf-job': async (path, options = UnderpostRun.DEFAULT_OPTION) => {
+      const podName = 'tf-job';
+      const volumeName = 'tf-job-volume';
+      shellExec(`kubectl delete pod ${podName}`);
+      shellExec(`kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${podName}
+  namespace: default
+spec:
+  restartPolicy: Never
+  runtimeClassName: nvidia
+  containers:
+    - name: tensorflow-gpu-tester
+      image: nvcr.io/nvidia/tensorflow:24.04-tf2-py3
+      imagePullPolicy: IfNotPresent
+      command: ['python']
+      args: ['${path}']
+      resources:
+        limits:
+          nvidia.com/gpu: '1'
+      env:
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: all
+      volumeMounts:
+        - name: ${volumeName}
+          mountPath: ${path}
+  volumes:
+    - name: ${volumeName}
+      hostPath:
+        path: ${path}
+        type: File
+EOF`);
+      const successInstance = await UnderpostTest.API.statusMonitor(podName);
+      if (successInstance) {
+        shellExec(`kubectl logs -f ${podName}`);
+      }
     },
   };
   static API = {
