@@ -574,6 +574,18 @@ class UnderpostRun {
 
       // shellExec(`sudo kubectl rollout restart deployment/${deployId}-${env}-${currentTraffic}`);
     },
+
+    'build-replica-conf': async (path, options = UnderpostRun.DEFAULT_OPTION) => {
+      const env = options.dev ? 'development' : 'production';
+      const baseCommand = options.dev || true ? 'node bin' : 'underpost';
+      let [deployId, host, _path] = path.split(',');
+      if (!_path) _path = '/single-replica';
+      shellExec(`${baseCommand} env ${deployId} ${env}`);
+      shellExec(`node bin/deploy build-single-replica ${deployId} ${host} ${_path}`);
+      shellExec(`node bin/deploy build-full-client ${deployId}`);
+      shellExec(`${baseCommand} run${options.dev === true ? ' --dev' : ''} --build sync ${deployId}`);
+    },
+
     /**
      * @method tf-vae-test
      * @description Creates and runs a job pod (`tf-vae-test`) that installs TensorFlow dependencies, clones the TensorFlow docs, and runs the CVAE tutorial script, with a terminal monitor attached.
