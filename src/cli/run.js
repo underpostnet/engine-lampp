@@ -58,6 +58,8 @@ class UnderpostRun {
    * @property {string} stdin - The stdin option for the container.
    * @property {string} restartPolicy - The restart policy for the container.
    * @property {boolean} terminal - Whether to open a terminal.
+   * @property {number} devProxyPortOffset - The port offset for the development proxy.
+   * @property {string} confServerPath - The configuration server path.
    * @memberof UnderpostRun
    */
   static DEFAULT_OPTION = {
@@ -80,6 +82,7 @@ class UnderpostRun {
     restartPolicy: '',
     terminal: false,
     devProxyPortOffset: 0,
+    confServerPath: '',
   };
   /**
    * @static
@@ -427,6 +430,7 @@ class UnderpostRun {
       // Dev usage: node bin run --dev --build sync dd-default
       const env = options.dev ? 'development' : 'production';
       const baseCommand = options.dev ? 'node bin' : 'underpost';
+      const baseClusterCommand = options.dev ? ' --dev' : '';
       const defaultPath = [
         'dd-default',
         1,
@@ -444,6 +448,8 @@ class UnderpostRun {
       if (isDeployRunnerContext(path, options)) {
         const { validVersion } = UnderpostRepository.API.privateConfUpdate(deployId);
         if (!validVersion) throw new Error('Version mismatch');
+        shellExec(`${baseCommand} run${baseClusterCommand} tz`);
+        shellExec(`${baseCommand} run${baseClusterCommand} cron`);
       }
 
       const currentTraffic = isDeployRunnerContext(path, options)
@@ -465,6 +471,39 @@ class UnderpostRun {
         UnderpostDeploy.API.switchTraffic(deployId, env, targetTraffic);
       } else logger.info('current traffic', UnderpostDeploy.API.getCurrentTraffic(deployId));
     },
+
+    /**
+     * @method tz
+     * @description Sets the system timezone using `timedatectl set-timezone` command.
+     * @param {string} path - The input value, identifier, or path for the operation (used as the timezone string).
+     * @param {Object} options - The default underpost runner options for customizing workflow
+     * @memberof UnderpostRun
+     */
+    tz: (path, options = UnderpostRun.DEFAULT_OPTION) => {
+      const tz = path
+        ? path
+        : UnderpostRootEnv.API.get('TIME_ZONE', undefined, { disableLog: true })
+          ? UnderpostRootEnv.API.get('TIME_ZONE')
+          : process.env.TIME_ZONE
+            ? process.env.TIME_ZONE
+            : 'America/New_York';
+      shellExec(`sudo timedatectl set-timezone ${tz}`);
+    },
+
+    /**
+     * @method cron
+     * @description Sets up and starts the `dd-cron` environment by writing environment variables, starting the cron service, and cleaning up.
+     * @param {string} path - The input value, identifier, or path for the operation.
+     * @param {Object} options - The default underpost runner options for customizing workflow
+     * @memberof UnderpostRun
+     */
+    cron: (path, options = UnderpostRun.DEFAULT_OPTION) => {
+      const env = options.dev ? 'development' : 'production';
+      shellExec(`node bin env ${path ? path : 'dd-cron'} ${env}`);
+      shellExec(`npm start`);
+      shellExec(`node bin env clean`);
+    },
+
     /**
      * @method ls-deployments
      * @description Retrieves and logs a table of Kubernetes deployments using `UnderpostDeploy.API.get`.
@@ -810,6 +849,22 @@ class UnderpostRun {
      */
     dev: async (path = '', options = UnderpostRun.DEFAULT_OPTION) => {
       let [deployId, subConf, host, _path, clientHostPort] = path.split(',');
+      if (options.confServerPath) {
+        const confServer = JSON.parse(fs.readFileSync(options.confServerPath, 'utf8'));
+        fs.writeFileSync(
+          `./engine-private/conf/${deployId}/conf.server.dev.${subConf}.json`,
+          JSON.stringify(
+            {
+              [host]: {
+                [_path]: confServer[host][_path],
+              },
+            },
+            null,
+            4,
+          ),
+          'utf8',
+        );
+      }
       if (!deployId) deployId = 'dd-default';
       if (!host) host = 'default.net';
       if (!_path) _path = '/';
