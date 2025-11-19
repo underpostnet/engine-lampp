@@ -238,8 +238,9 @@ class UnderpostCluster {
             `sudo kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.29.3/manifests/tigera-operator.yaml`,
           );
           shellExec(
-            `sudo kubectl apply -f ${underpostRoot}/manifests/kubeadm-calico-config.yaml -n ${options.namespace}`,
+            `kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.29.3/manifests/custom-resources.yaml`,
           );
+          shellExec(`sudo kubectl apply -f ${underpostRoot}/manifests/kubeadm-calico-config.yaml`);
 
           // Untaint control plane node to allow scheduling pods
           const nodeName = os.hostname();
@@ -247,7 +248,7 @@ class UnderpostCluster {
           // Install local-path-provisioner for dynamic PVCs (optional but recommended)
           logger.info('Installing local-path-provisioner...');
           shellExec(
-            `kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/master/deploy/local-path-storage.yaml -n ${options.namespace}`,
+            `kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/master/deploy/local-path-storage.yaml`,
           );
         } else {
           // Kind cluster initialization (if not using kubeadm or k3s)
@@ -454,7 +455,7 @@ EOF
       }
 
       if (options.full === true || options.contour === true) {
-        shellExec(`kubectl apply -f https://projectcontour.io/quickstart/contour.yaml -n ${options.namespace}`);
+        shellExec(`kubectl apply -f https://projectcontour.io/quickstart/contour.yaml`);
         if (options.kubeadm === true) {
           // Envoy service might need NodePort for kubeadm
           shellExec(
