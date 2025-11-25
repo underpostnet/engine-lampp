@@ -130,11 +130,12 @@ class UnderpostDeploy {
      * @param {number} replicas - Number of replicas for the deployment.
      * @param {string} image - Docker image for the deployment.
      * @param {string} namespace - Kubernetes namespace for the deployment.
+     * @param {Array<object>} volumes - Volume configurations for the deployment.
      * @param {Array<string>} cmd - Command to run in the deployment container.
      * @returns {string} - YAML deployment configuration for the specified deployment.
      * @memberof UnderpostDeploy
      */
-    deploymentYamlPartsFactory({ deployId, env, suffix, resources, replicas, image, namespace, cmd }) {
+    deploymentYamlPartsFactory({ deployId, env, suffix, resources, replicas, image, namespace, volumes, cmd }) {
       if (!cmd)
         cmd = [
           `npm install -g npm@11.2.0`,
@@ -143,13 +144,14 @@ class UnderpostDeploy {
           `underpost start --build --run ${deployId} ${env}`,
         ];
       const packageJson = JSON.parse(fs.readFileSync('./package.json', 'utf8'));
-      let volumes = [
-        {
-          volumeMountPath: '/etc/config',
-          volumeName: 'config-volume',
-          configMap: 'underpost-config',
-        },
-      ];
+      if (!volumes)
+        volumes = [
+          {
+            volumeMountPath: '/etc/config',
+            volumeName: 'config-volume',
+            configMap: 'underpost-config',
+          },
+        ];
       const confVolume = fs.existsSync(`./engine-private/conf/${deployId}/conf.volume.json`)
         ? JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.volume.json`, 'utf8'))
         : [];
@@ -524,6 +526,7 @@ EOF`);
                   env,
                   version,
                   namespace,
+                  nodeName: options.node ? options.node : env === 'development' ? 'kind-worker' : os.hostname(),
                 });
           }
 
@@ -728,18 +731,20 @@ EOF`);
      * @param {string} options.env - Environment for the deployment.
      * @param {string} options.version - Version of the deployment.
      * @param {string} options.namespace - Kubernetes namespace for the deployment.
+     * @param {string} options.nodeName - Node name for the deployment.
      * @memberof UnderpostDeploy
      */
     deployVolume(
       volume = { claimName: '', volumeMountPath: '', volumeName: '' },
       options = {
-        deployId: 'dd-default',
-        env: 'development',
-        version: 'blue',
-        namespace: 'default',
+        deployId: '',
+        env: '',
+        version: '',
+        namespace: '',
+        nodeName: '',
       },
     ) {
-      if (volume.claimName) {
+      if (!volume.claimName) {
         logger.warn('Volume claimName is required to deploy volume', volume);
         return;
       }
@@ -747,8 +752,17 @@ EOF`);
       const pvcId = `${volume.claimName}-${deployId}-${env}-${version}`;
       const pvId = `${volume.claimName.replace('pvc-', 'pv-')}-${deployId}-${env}-${version}`;
       const rootVolumeHostPath = `/home/dd/engine/volume/${pvId}`;
-      if (!fs.existsSync(rootVolumeHostPath)) fs.mkdirSync(rootVolumeHostPath, { recursive: true });
-      fs.copySync(volume.volumeMountPath, rootVolumeHostPath);
+      if (options.nodeName) {
+        if (!fs.existsSync(rootVolumeHostPath)) fs.mkdirSync(rootVolumeHostPath, { recursive: true });
+        fs.copySync(volume.volumeMountPath, rootVolumeHostPath);
+      } else {
+        shellExec(`docker exec -i kind-worker bash -c "mkdir -p ${rootVolumeHostPath}"`);
+        // shellExec(`docker cp ${volume.volumeMountPath} kind-worker:${rootVolumeHostPath}`);
+        shellExec(`tar -C ${volume.volumeMountPath} -c . | docker cp - kind-worker:${rootVolumeHostPath}`);
+        shellExec(
+          `docker exec -i kind-worker bash -c "chown -R 1000:1000 ${rootVolumeHostPath} || true; chmod -R 755 ${rootVolumeHostPath}"`,
+        );
+      }
       shellExec(`kubectl delete pvc ${pvcId} -n ${namespace} --ignore-not-found`);
       shellExec(`kubectl delete pv ${pvId} --ignore-not-found`);
       shellExec(`kubectl apply -f - -n ${namespace} <<EOF
