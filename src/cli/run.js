@@ -503,7 +503,7 @@ class UnderpostRun {
       }
 
       const currentTraffic = isDeployRunnerContext(path, options)
-        ? UnderpostDeploy.API.getCurrentTraffic(deployId)
+        ? UnderpostDeploy.API.getCurrentTraffic(deployId, { namespace: options.namespace })
         : '';
       let targetTraffic = currentTraffic ? (currentTraffic === 'blue' ? 'green' : 'blue') : '';
       if (targetTraffic) versions = targetTraffic;
@@ -518,10 +518,15 @@ class UnderpostRun {
         shellExec(
           `${baseCommand} deploy --kubeadm --disable-update-proxy ${deployId} ${env} --versions ${versions}${options.namespace ? ` --namespace ${options.namespace}` : ''}`,
         );
-        if (!targetTraffic) targetTraffic = UnderpostDeploy.API.getCurrentTraffic(deployId);
+        if (!targetTraffic)
+          targetTraffic = UnderpostDeploy.API.getCurrentTraffic(deployId, { namespace: options.namespace });
         await UnderpostDeploy.API.monitorReadyRunner(deployId, env, targetTraffic);
         UnderpostDeploy.API.switchTraffic(deployId, env, targetTraffic);
-      } else logger.info('current traffic', UnderpostDeploy.API.getCurrentTraffic(deployId));
+      } else
+        logger.info(
+          'current traffic',
+          UnderpostDeploy.API.getCurrentTraffic(deployId, { namespace: options.namespace }),
+        );
     },
 
     /**
@@ -554,6 +559,83 @@ class UnderpostRun {
       shellExec(`node bin env ${path ? path : 'dd-cron'} ${env}`);
       shellExec(`npm start`);
       shellExec(`node bin env clean`);
+    },
+
+    /**
+     * @method get-proxy
+     * @description Retrieves and logs the HTTPProxy resources in the specified namespace using `kubectl get HTTPProxy`.
+     * @param {string} path - The input value, identifier, or path for the operation (used as an optional filter for the HTTPProxy resources).
+     * @param {Object} options - The default underpost runner options for customizing workflow
+     * @memberof UnderpostRun
+     */
+    'get-proxy': async (path = '', options = UnderpostRun.DEFAULT_OPTION) => {
+      console.log(
+        shellExec(`kubectl get HTTPProxy -n ${options.namespace} ${path} -o yaml`, {
+          silent: true,
+          stdout: true,
+        })
+          .replaceAll(`blue`, `blue`.bgBlue.bold.black)
+          .replaceAll('green', 'green'.bgGreen.bold.black)
+          .replaceAll('Error', 'Error'.bold.red)
+          .replaceAll('error', 'error'.bold.red)
+          .replaceAll('ERROR', 'ERROR'.bold.red)
+          .replaceAll('Invalid', 'Invalid'.bold.red)
+          .replaceAll('invalid', 'invalid'.bold.red)
+          .replaceAll('INVALID', 'INVALID'.bold.red),
+      );
+    },
+
+    'instance-promote': async (path, options = UnderpostRun.DEFAULT_OPTION) => {
+      const env = options.dev ? 'development' : 'production';
+      const baseCommand = options.dev ? 'node bin' : 'underpost';
+      const baseClusterCommand = options.dev ? ' --dev' : '';
+      let [deployId, id] = path.split(',');
+      const confInstances = JSON.parse(
+        fs.readFileSync(`./engine-private/conf/${deployId}/conf.instances.json`, 'utf8'),
+      );
+      for (const instance of confInstances) {
+        let {
+          id: _id,
+          host: _host,
+          path: _path,
+          image: _image,
+          fromPort: _fromPort,
+          toPort: _toPort,
+          cmd: _cmd,
+          volumes: _volumes,
+          metadata: _metadata,
+        } = instance;
+        if (id !== _id) continue;
+        const _deployId = `${deployId}-${_id}`;
+        const currentTraffic = UnderpostDeploy.API.getCurrentTraffic(_deployId, {
+          hostTest: _host,
+        });
+        const targetTraffic = currentTraffic ? (currentTraffic === 'blue' ? 'green' : 'blue') : 'blue';
+        let proxyYaml =
+          UnderpostDeploy.API.baseProxyYamlFactory({ host: _host, env, options }) +
+          UnderpostDeploy.API.deploymentYamlServiceFactory({
+            path: _path,
+            port: _fromPort,
+            // serviceId: deployId,
+            deployId: _deployId,
+            env,
+            deploymentVersions: [targetTraffic],
+            // pathRewritePolicy,
+          });
+        if (options.tls) {
+          shellExec(`sudo kubectl delete Certificate ${_host} -n ${options.namespace} --ignore-not-found`);
+          proxyYaml += UnderpostDeploy.API.buildCertManagerCertificate({ ...options, host: _host });
+        }
+        // console.log(proxyYaml);
+        shellExec(`kubectl delete HTTPProxy ${_host} --namespace ${options.namespace} --ignore-not-found`);
+        shellExec(
+          `kubectl apply -f - -n ${options.namespace} <<EOF
+${proxyYaml}
+EOF
+`,
+          { disableLog: true },
+        );
+      }
     },
 
     /**
@@ -651,30 +733,11 @@ EOF
           logger.error(`Deployment ${deployId} did not become ready in time.`);
           return;
         }
-
-        let proxyYaml =
-          UnderpostDeploy.API.baseProxyYamlFactory({ host: _host, env, options }) +
-          UnderpostDeploy.API.deploymentYamlServiceFactory({
-            path: _path,
-            port: _fromPort,
-            // serviceId: deployId,
-            deployId: _deployId,
-            env,
-            deploymentVersions: [targetTraffic],
-            // pathRewritePolicy,
-          });
-        if (options.tls) {
-          shellExec(`sudo kubectl delete Certificate ${_host} -n ${options.namespace} --ignore-not-found`);
-          proxyYaml += UnderpostDeploy.API.buildCertManagerCertificate({ ...options, host: _host });
-        }
-        // console.log(proxyYaml);
-        shellExec(`kubectl delete HTTPProxy ${_host} --namespace ${options.namespace} --ignore-not-found`);
         shellExec(
-          `kubectl apply -f - -n ${options.namespace} <<EOF
-${proxyYaml}
-EOF
-`,
-          { disableLog: true },
+          `${baseCommand} run${baseClusterCommand} --namespace ${options.namespace}` +
+            `${options.nodeName ? ` --node-name ${options.nodeName}` : ''}` +
+            `${options.tls ? ` --tls` : ''}` +
+            ` instance-promote '${path}'`,
         );
       }
     },
@@ -951,12 +1014,12 @@ EOF
       if (!inputReplicas) inputReplicas = 1;
       if (inputDeployId === 'dd') {
         for (const deployId of fs.readFileSync(`./engine-private/deploy/dd.router`, 'utf8').split(',')) {
-          const currentTraffic = UnderpostDeploy.API.getCurrentTraffic(deployId);
+          const currentTraffic = UnderpostDeploy.API.getCurrentTraffic(deployId, { namespace: options.namespace });
           const targetTraffic = currentTraffic === 'blue' ? 'green' : 'blue';
           UnderpostDeploy.API.switchTraffic(deployId, inputEnv, targetTraffic, inputReplicas);
         }
       } else {
-        const currentTraffic = UnderpostDeploy.API.getCurrentTraffic(inputDeployId);
+        const currentTraffic = UnderpostDeploy.API.getCurrentTraffic(inputDeployId, { namespace: options.namespace });
         const targetTraffic = currentTraffic === 'blue' ? 'green' : 'blue';
         UnderpostDeploy.API.switchTraffic(inputDeployId, inputEnv, targetTraffic, inputReplicas);
       }
@@ -1043,7 +1106,7 @@ EOF
       const deployId = path;
       const { validVersion } = UnderpostRepository.API.privateConfUpdate(deployId);
       if (!validVersion) throw new Error('Version mismatch');
-      const currentTraffic = UnderpostDeploy.API.getCurrentTraffic(deployId);
+      const currentTraffic = UnderpostDeploy.API.getCurrentTraffic(deployId, { namespace: options.namespace });
       const targetTraffic = currentTraffic === 'blue' ? 'green' : 'blue';
       const env = 'production';
       const ignorePods = UnderpostDeploy.API.get(`${deployId}-${env}-${targetTraffic}`).map((p) => p.NAME);
@@ -1185,7 +1248,7 @@ EOF
       }
       const success = await UnderpostTest.API.statusMonitor(podToMonitor);
       if (success) {
-        const versions = UnderpostDeploy.API.getCurrentTraffic(deployId) || 'blue';
+        const versions = UnderpostDeploy.API.getCurrentTraffic(deployId, { namespace: options.namespace }) || 'blue';
         if (!node) node = os.hostname();
         shellExec(
           `${baseCommand} deploy${options.dev ? '' : ' --kubeadm'}${options.devProxyPortOffset ? ' --disable-deployment-proxy' : ''} --build-manifest --sync --info-router --replicas ${
