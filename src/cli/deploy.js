@@ -946,7 +946,7 @@ ${renderHosts}`,
                   else logger.error(`${iteratorTag} | ${out}`);
               } else if (out.match('Empty environment variables'))
                 logger.info(`${iteratorTag} | Waiting for environment variables to be set inside container...`);
-              else if (out.match('info container-status(')) console.log(out);
+              else if (out.match('info container-status\\(')) console.log(out);
               else console.log(out);
             }
           }
