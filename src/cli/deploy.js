@@ -934,20 +934,24 @@ ${renderHosts}`,
         }
         switch (outLogType) {
           case 'underpost': {
+            let indexOf = -1;
             for (const out of result.outs) {
-              if (out.match('not') && out.match('found')) {
-                if (checkStatusIteration <= 20)
-                  if (out.match(deploymentId))
-                    logger.info(`${iteratorTag} | Starting deployment runner inside container...`);
-                  else if (out.match('underpost'))
-                    logger.info(`${iteratorTag} | Installing underpost client inside container...`);
-                  else if (out.match('task'))
-                    logger.info(`${iteratorTag} | Running initial setup tasks inside container...`);
-                  else logger.error(`${iteratorTag} | ${out}`);
-              } else if (out.match('Empty environment variables'))
-                logger.info(`${iteratorTag} | Waiting for environment variables to be set inside container...`);
-              else if (out.match('info container-status\\(')) console.log(out);
-              else console.log(out);
+              indexOf++;
+              const subIteratorTag = `${iteratorTag}[Pod index:${indexOf}]`;
+
+              if (out.match('not found') && checkStatusIteration <= 20 && out.match(deploymentId))
+                logger.info(`${subIteratorTag} | Starting deployment runner inside container...`);
+              else if (out.match('not found') && checkStatusIteration <= 20 && out.match('underpost'))
+                logger.info(`${subIteratorTag} | Installing underpost client inside container...`);
+              else if (out.match('not found') && checkStatusIteration <= 20 && out.match('task'))
+                logger.info(`${subIteratorTag} | Initializing setup tasks inside container...`);
+              if (out.match('Empty environment variables'))
+                logger.info(`${subIteratorTag} | Waiting for environment variables to be set inside container...`);
+              else if (out.match(`${deployId}-${env}-build-deployment`))
+                logger.info(`${subIteratorTag} | Building deployment inside container...`);
+              else if (out.match(`${deployId}-${env}-initializing-deployment`))
+                logger.info(`${subIteratorTag} | Initializing deployment inside container...`);
+              else logger.info(`${subIteratorTag} | In progress...`);
             }
           }
         }
