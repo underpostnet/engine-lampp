@@ -1186,11 +1186,11 @@ EOF_MAAS_CFG`,
           `boot=casper`,
           `url=http://${ipHost}:8888/${hostname}/pxe/squashfs`,
           // `url=tftp://${ipHost}/${hostname}/pxe/squashfs`,
-          `nomodeset`,
-          `plymouth.enable=0`,
-          `cma=512M`,
-          `ignore_uuid`,
-          `systemd.unit=multi-user.target`,
+          // `nomodeset`,
+          // `plymouth.enable=0`,
+          // `cma=512M`,
+          // `ignore_uuid`,
+          // `systemd.unit=multi-user.target`,
         ];
       }
 
