@@ -147,8 +147,21 @@ class UnderpostBaremetal {
       // Set default MAC address
       let macAddress = options.mac ? options.mac : '00:00:00:00:00:00';
 
+      const workflowsConfig = UnderpostBaremetal.API.loadWorkflowsConfig();
+
+      if (!workflowsConfig[workflowId]) {
+        throw new Error(`Workflow configuration not found for ID: ${workflowId}`);
+      }
+
+      const tftpPrefix = workflowsConfig[workflowId].tftpPrefix || 'rpi4mb';
       // Define the debootstrap architecture.
       let debootstrapArch;
+
+      // Set debootstrap architecture.
+      if (workflowsConfig[workflowId].type === 'chroot') {
+        const { architecture } = workflowsConfig[workflowId].debootstrap.image;
+        debootstrapArch = architecture;
+      }
 
       // Define the database provider ID.
       const dbProviderId = 'postgresql-17';
@@ -156,8 +169,8 @@ class UnderpostBaremetal {
       // Define the NFS host path based on the environment variable and hostname.
       const nfsHostPath = `${process.env.NFS_EXPORT_PATH}/${hostname}`;
 
-      // Define the TFTP root path based on the environment variable and hostname.
-      const tftpRootPath = `${process.env.TFTP_ROOT}/${hostname}`;
+      // Define the TFTP root prefix path based
+      const tftpRootPath = `${process.env.TFTP_ROOT}/${tftpPrefix}`;
 
       // Capture metadata for the callback execution, useful for logging and auditing.
       const callbackMetaData = {
@@ -442,17 +455,6 @@ rm -rf ${artifacts.join(' ')}`);
       if (options.controlServerDbUninstall === true) {
         shellExec(`node ${underpostRoot}/bin/deploy ${dbProviderId} uninstall`);
         return;
-      }
-
-      const workflowsConfig = UnderpostBaremetal.API.loadWorkflowsConfig();
-      if (!workflowsConfig[workflowId]) {
-        throw new Error(`Workflow configuration not found for ID: ${workflowId}`);
-      }
-
-      // Set debootstrap architecture.
-      if (workflowsConfig[workflowId].type === 'chroot') {
-        const { architecture } = workflowsConfig[workflowId].debootstrap.image;
-        debootstrapArch = architecture;
       }
 
       // Handle NFS mount operation.
@@ -762,49 +764,19 @@ rm -rf ${artifacts.join(' ')}`);
       if (options.commission === true) {
         const { type } = workflowsConfig[workflowId];
 
-        let userDataPath;
-        let monitorIpAddress;
-
-        if (type !== 'chroot' && type !== 'iso-nfs') {
-          const { maas, chronyc, keyboard, systemProvisioning: wfSystemProvisioning } = workflowsConfig[workflowId];
-          const systemProvisioning = wfSystemProvisioning;
-          const architecture = maas.commissioning.architecture;
-          const { timezone, chronyConfPath } = chronyc;
-
-          // Generate cloud-init user-data for post-deployment configuration
-          // This will be used by MAAS during the deployment phase (after commissioning)
-          const sshPublicKey = fs.readFileSync(`/home/dd/engine/engine-private/deploy/id_rsa.pub`, 'utf8').trim();
-          const userDataContent = UnderpostCloudInit.API.diskDeploymentUserDataFactory({
-            hostname,
-            timezone,
-            chronyConfPath,
-            ntpServer: process.env.MAAS_NTP_SERVER || '0.pool.ntp.org',
-            keyboardLayout: keyboard?.layout || 'us',
-            sshPublicKey,
-            adminUsername: process.env.MAAS_ADMIN_USERNAME,
-            systemProvisioning,
-            architecture,
-          });
-
-          // Save user-data for later use during deployment
-          userDataPath = `/tmp/maas-userdata-${hostname}.yaml`;
-          fs.writeFileSync(userDataPath, userDataContent, 'utf8');
-          logger.info(`Cloud-init user-data saved to: ${userDataPath}`);
-          logger.info('This will be applied by MAAS during deployment phase');
-
-          monitorIpAddress = ipAddress;
-        }
-
-        await UnderpostBaremetal.API.commissionMonitor({
+        const commissionMonitorPayload = {
+          workflowId,
           macAddress,
-          nfsHostPath,
           underpostRoot,
-          hostname,
           maas: workflowsConfig[workflowId].maas,
           networkInterfaceName: workflowsConfig[workflowId].networkInterfaceName,
-          userDataPath,
-          ipAddress: monitorIpAddress,
-        });
+          ipAddress,
+        };
+
+        logger.info('Waiting for commissioning...', commissionMonitorPayload);
+
+        await UnderpostBaremetal.API.commissionMonitor(commissionMonitorPayload);
+
         if (type === 'chroot' && options.cloudInit === true) {
           openTerminal(`node ${underpostRoot}/bin baremetal ${workflowId} ${ipAddress} ${hostname} --logs nfs-cloud`);
           openTerminal(`node ${underpostRoot}/bin baremetal ${workflowId} ${ipAddress} ${hostname} --logs nfs-machine`);
@@ -859,28 +831,10 @@ rm -rf ${artifacts.join(' ')}`);
       if (!isoUrl) isoUrl = `https://cdimage.ubuntu.com/releases/${majorVersion}/release/${isoFilename}`;
       else isoFilename = isoUrl.split('/').pop();
 
-      const isoPath = `${nfsHostPath}/${isoFilename}`;
+      const isoPath = `/var/tmp/ubuntu-live-iso/${isoFilename}`;
       const extractDir = `${nfsHostPath}/casper`;
 
-      if (fs.existsSync(`/var/tmp/ubuntu-live-iso/${isoFilename}`)) {
-        shellExec(`cp -a /var/tmp/ubuntu-live-iso/${isoFilename} ${isoPath}`);
-      }
-
-      // Check if cached ISO exists and is valid (size > 100MB to ensure it's not empty/corrupt)
-      let needsDownload = true;
-      if (fs.existsSync(isoPath)) {
-        const stats = fs.statSync(isoPath);
-        const minValidSize = 100 * 1024 * 1024; // 100MB minimum
-        if (stats.size > minValidSize) {
-          logger.info(`Using cached ISO: ${isoPath} (${(stats.size / 1024 / 1024 / 1024).toFixed(2)} GB)`);
-          needsDownload = false;
-        } else {
-          logger.warn(`Cached ISO appears corrupt or incomplete (${stats.size} bytes), re-downloading...`);
-          shellExec(`rm -f ${isoPath}`);
-        }
-      }
-
-      if (needsDownload) {
+      if (!fs.existsSync(isoPath)) {
         logger.info(`Downloading Ubuntu ${version} live ISO for ${arch}...`);
         logger.info(`URL: ${isoUrl}`);
         logger.info(`This may take a while (typically 1-2 GB)...`);
@@ -1402,38 +1356,15 @@ menuentry '${menuentryStr}' {
      * once a matching MAC address is found. It also opens terminal windows for live logs.
      * @param {object} params - The parameters for the function.
      * @param {string} params.macAddress - The MAC address to monitor for.
-     * @param {string} params.nfsHostPath - The NFS host path for storing system-id and auth tokens.
-     * @param {string} params.underpostRoot - The root directory of the Underpost project.
-     * @param {string} params.hostname - The desired hostname for the new machine.
      * @param {object} params.maas - MAAS configuration details.
      * @param {string} params.networkInterfaceName - The name of the network interface.
-     * @param {string} params.userDataPath - The path to the cloud-init user-data file.
      * @param {string} params.ipAddress - The IP address of the machine (used if MAC is all zeros).
+     * @param {string} params.workflowId - The workflow identifier for hostname prefixing.
      * @returns {Promise<void>} A promise that resolves when commissioning is initiated or after a delay.
      * @memberof UnderpostBaremetal
      */
-    async commissionMonitor({
-      macAddress,
-      nfsHostPath,
-      underpostRoot,
-      hostname,
-      maas,
-      networkInterfaceName,
-      userDataPath,
-      ipAddress,
-    }) {
+    async commissionMonitor({ macAddress, maas, networkInterfaceName, ipAddress, workflowId }) {
       {
-        logger.info('Waiting for commissioning...', {
-          macAddress,
-          nfsHostPath,
-          underpostRoot,
-          hostname,
-          maas,
-          networkInterfaceName,
-          userDataPath,
-          ipAddress,
-        });
-
         // Query observed discoveries from MAAS.
         const discoveries = JSON.parse(
           shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} discoveries read`, {
@@ -1474,7 +1405,7 @@ menuentry '${menuentryStr}' {
 
           if (machine.mac_addresses === macAddress && (!ipAddress || discovery.ip === ipAddress))
             try {
-              machine.hostname = hostname;
+              machine.hostname = `${workflowId}-${machine.hostname}`;
               machine.mac_address = macAddress;
 
               logger.info('Machine discovered! Creating in MAAS...', machine);
@@ -1517,14 +1448,11 @@ menuentry '${menuentryStr}' {
         }
         await timer(1000);
         await UnderpostBaremetal.API.commissionMonitor({
-          macAddress,
-          nfsHostPath,
-          underpostRoot,
-          hostname,
-          maas,
           networkInterfaceName,
-          userDataPath,
           ipAddress,
+          macAddress,
+          maas,
+          workflowId,
         });
       }
     },
@@ -2102,16 +2030,14 @@ udp-port = 32766
      * @throws {Error} If an invalid workflow ID is provided.
      */
     bootConfFactory({ workflowId, tftpIp, tftpPrefixStr, macAddress, clientIp, subnet, gateway }) {
-      switch (workflowId) {
-        case 'rpi4mb2Disk':
-        case 'rpi4mb':
-          // Instructions: Flash sd with Raspberry Pi OS lite and update:
-          // EEPROM (Electrically Erasable Programmable Read-Only Memory) like microcontrollers
-          // sudo rpi-eeprom-config --apply /boot/firmware/boot.conf
-          // sudo reboot
-          // vcgencmd bootloader_config
-          // shutdown -h now
-          return `[all]
+      if (workflowId.startsWith('rpi4mb')) {
+        // Instructions: Flash sd with Raspberry Pi OS lite and update:
+        // EEPROM (Electrically Erasable Programmable Read-Only Memory) like microcontrollers
+        // sudo rpi-eeprom-config --apply /boot/firmware/boot.conf
+        // sudo reboot
+        // vcgencmd bootloader_config
+        // shutdown -h now
+        return `[all]
 BOOT_UART=0
 WAKE_ON_GPIO=1
 POWER_OFF_ON_HALT=0
@@ -2155,10 +2081,7 @@ MAC_ADDRESS=${macAddress}
 CLIENT_IP=${clientIp}
 SUBNET=${subnet}
 GATEWAY=${gateway}`;
-
-        default:
-          logger.warn(`No boot configuration factory defined for workflow ID: ${workflowId}`);
-      }
+      } else logger.warn(`No boot configuration factory defined for workflow ID: ${workflowId}`);
     },
 
     /**
