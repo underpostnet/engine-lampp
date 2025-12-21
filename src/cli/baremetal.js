@@ -809,6 +809,7 @@ rm -rf ${artifacts.join(' ')}`);
           maas: workflowsConfig[workflowId].maas,
           networkInterfaceName: workflowsConfig[workflowId].networkInterfaceName,
           ipAddress,
+          hostname,
         };
 
         logger.info('Waiting for commissioning...', commissionMonitorPayload);
@@ -1316,55 +1317,67 @@ menuentry '${menuentryStr}' {
         `ip=${ipClient}:${ipFileServer}:${ipDhcpServer}:${netmask}:${hostname}` +
         `:${networkInterfaceName ? networkInterfaceName : 'eth0'}:${ipConfig}:${dnsServer}`;
       const nfsOptions = `${
-        [
-          // 'tcp',
-          // 'nfsvers=3',
-          // 'nolock',
-          // 'rw',
-          // 'vers=3',
-          // 'protocol=tcp',
-          // 'hard=true',
-          // 'port=2049',
-          // 'sec=none',
-          // 'hard',
-          // 'intr',
-          // 'rsize=32768',
-          // 'wsize=32768',
-          // 'acregmin=0',
-          // 'acregmax=0',
-          // 'acdirmin=0',
-          // 'acdirmax=0',
-          // 'noac',
-          // 'nodev',
-          // 'nosuid',
-        ]
+        type === 'chroot'
+          ? [
+              'rw',
+              'tcp',
+              'nfsvers=3',
+              'nolock',
+              'vers=3',
+              // 'protocol=tcp',
+              // 'hard=true',
+              'port=2049',
+              // 'sec=none',
+              'hard',
+              'intr',
+              'rsize=32768',
+              'wsize=32768',
+              'acregmin=0',
+              'acregmax=0',
+              'acdirmin=0',
+              'acdirmax=0',
+              'noac',
+              // 'nodev',
+              // 'nosuid',
+            ]
+          : []
       }`;
       const nfsRootParam = `nfsroot=${ipFileServer}:${process.env.NFS_EXPORT_PATH}/${hostname}${nfsOptions ? `,${nfsOptions}` : ''}`;
 
       // https://manpages.ubuntu.com/manpages/noble/man7/casper.7.html
       const netBootParams = [`netboot=url`];
       if (fileSystemUrl) netBootParams.push(`url=${fileSystemUrl.replace('https', 'http')}`);
-      const nfsParams = [`boot=casper`, `netboot=nfs`];
-      const qemuNfsRootParams = [`rootfstype=nfs`, `root=/dev/nfs`, 'initrd=initrd.img', `init=/sbin/init`];
+      const nfsParams = [`boot=casper`];
+      const baseQemuNfsRootParams = [`root=/dev/nfs`];
+      const qemuNfsRootParams = [
+        `rootfstype=nfs`,
+        `rootwait`,
+        `fixrtc`,
+        `initrd=initrd.img`,
+        `netboot=nfs`,
+        `init=/sbin/init`,
+        // `systemd.mask=systemd-network-generator.service`,
+        // `systemd.mask=systemd-networkd.service`,
+        // `systemd.mask=systemd-fsck-root.service`,
+        // `systemd.mask=systemd-udev-trigger.service`,
+      ];
 
       const kernelParams = [
-        `ignore_uuid`,
+        `rw`,
         // `ro`,
-        // `rw`,
-        // `ipv6.disable=1`,
-        // `ramdisk_size=3550000`,
+        `ignore_uuid`,
+        `ipv6.disable=1`,
         // `console=serial0,115200`,
         // `console=tty1`,
-        // `boot=casper`,
         // `casper-getty`,
         // `layerfs-path=filesystem.squashfs`,
         // `root=/dev/ram0`,
         // `toram`,
         // 'nomodeset',
-        // `rootwait`,
         // `net.ifnames=0`, // only networkInterfaceName = eth0
         // `biosdevname=0`, // only networkInterfaceName = eth0
         // `editable_rootfs=tmpfs`,
+        // `ramdisk_size=3550000`,
         // `cma=120M`,
         // `root=/dev/sda1`, // rpi4 usb port unit
         // `fixrtc`,
@@ -1381,7 +1394,7 @@ menuentry '${menuentryStr}' {
       if (type === 'iso-ram') {
         cmd = [ipParam, ...netBootParams, ...kernelParams];
       } else if (type === 'chroot') {
-        cmd = [ipParam, nfsRootParam, ...qemuNfsRootParams, ...kernelParams];
+        cmd = [...baseQemuNfsRootParams, nfsRootParam, ipParam, ...qemuNfsRootParams, ...kernelParams];
       } else if (type === 'iso-nfs') {
         cmd = [ipParam, nfsRootParam, ...nfsParams, ...kernelParams];
       } else {
@@ -1389,7 +1402,7 @@ menuentry '${menuentryStr}' {
       }
 
       const cmdStr = cmd.join(' ');
-      logger.info('Constructed kernel command line:');
+      logger.info('Constructed kernel command line');
       console.log(newInstance(cmdStr).bgRed.bold.black);
       return { cmd: cmdStr };
     },
@@ -1402,12 +1415,13 @@ menuentry '${menuentryStr}' {
      * @param {string} params.macAddress - The MAC address to monitor for.
      * @param {object} params.maas - MAAS configuration details.
      * @param {string} params.networkInterfaceName - The name of the network interface.
+     * @param {string} params.hostname - The desired hostname for the machine.
      * @param {string} params.ipAddress - The IP address of the machine (used if MAC is all zeros).
      * @param {string} params.workflowId - The workflow identifier for hostname prefixing.
      * @returns {Promise<void>} A promise that resolves when commissioning is initiated or after a delay.
      * @memberof UnderpostBaremetal
      */
-    async commissionMonitor({ macAddress, maas, networkInterfaceName, ipAddress, workflowId }) {
+    async commissionMonitor({ macAddress, maas, networkInterfaceName, hostname, ipAddress, workflowId }) {
       {
         // Query observed discoveries from MAAS.
         const discoveries = JSON.parse(
@@ -1445,11 +1459,12 @@ menuentry '${menuentryStr}' {
             'mac discovered:'.green + machine.mac_addresses,
             'ip target:'.green + ipAddress,
             'ip discovered:'.green + discovery.ip,
+            'hostname:'.green + machine.hostname,
           );
 
           if (machine.mac_addresses === macAddress && (!ipAddress || discovery.ip === ipAddress))
             try {
-              machine.hostname = `${workflowId}-${machine.hostname}`;
+              machine.hostname = `${hostname}`;
               machine.mac_address = macAddress;
 
               logger.info('Machine discovered! Creating in MAAS...', machine);
@@ -1493,6 +1508,7 @@ menuentry '${menuentryStr}' {
         await timer(1000);
         await UnderpostBaremetal.API.commissionMonitor({
           networkInterfaceName,
+          hostname,
           ipAddress,
           macAddress,
           maas,
