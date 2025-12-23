@@ -17,6 +17,7 @@ import UnderpostCloudInit from './cloud-init.js';
 import UnderpostRepository from './repository.js';
 import { newInstance, range, s4, timer } from '../client/components/core/CommonJs.js';
 import { spawnSync } from 'child_process';
+import Underpost from '../index.js';
 
 const logger = loggerFactory(import.meta);
 
@@ -155,13 +156,7 @@ class UnderpostBaremetal {
       ipConfig = ipConfig ? ipConfig : 'none';
 
       // Set default MAC address
-      let macAddress = options.mac
-        ? options.mac
-        : ((options.mac = range(1, 6)
-            .map(() => s4().substring(0, 2))
-            .join(':')),
-          options.mac);
-
+      let macAddress = UnderpostBaremetal.API.macAddressFactory(options).mac;
       const workflowsConfig = UnderpostBaremetal.API.loadWorkflowsConfig();
 
       if (!workflowsConfig[workflowId]) {
@@ -204,6 +199,18 @@ class UnderpostBaremetal {
 
       // Log the initiation of the baremetal callback with relevant metadata.
       logger.info('Baremetal callback', callbackMetaData);
+
+      if (options.createMachine === true) {
+        console.log(
+          UnderpostBaremetal.API.machineFactory({
+            hostname,
+            ipAddress,
+            macAddress,
+            maas: workflowsConfig[workflowId].maas,
+          }).machine,
+        );
+        return;
+      }
 
       if (options.installPacker) {
         await UnderpostBaremetal.API.installPacker(underpostRoot);
@@ -623,19 +630,9 @@ rm -rf ${artifacts.join(' ')}`);
         });
 
       // Handle commissioning tasks (placeholder for future implementation).
-      let machine, systemId;
+
       if (options.commission === true) {
         let { firmwares, networkInterfaceName, maas, menuentryStr, type } = workflowsConfig[workflowId];
-
-        if (options.createMachine === true) {
-          machine = UnderpostBaremetal.API.machineFactory({
-            hostname,
-            ipAddress,
-            macAddress,
-            maas: workflowsConfig[workflowId].maas,
-          }).machine;
-          systemId = machine.system_id;
-        }
 
         // Use commissioning config (Ubuntu ephemeral) for PXE boot resources
         const commissioningImage = maas.commissioning;
@@ -693,7 +690,6 @@ rm -rf ${artifacts.join(' ')}`);
           });
 
           const { cmd } = UnderpostBaremetal.API.kernelCmdBootParamsFactory({
-            systemId,
             ipClient: ipAddress,
             ipDhcpServer: callbackMetaData.runnerHost.ip,
             ipConfig,
@@ -709,18 +705,14 @@ rm -rf ${artifacts.join(' ')}`);
             cloudInit: options.cloudInit,
           });
 
-          const grubCfg = UnderpostBaremetal.API.grubFactory({
+          const { grubCfgSrc } = UnderpostBaremetal.API.grubFactory({
             menuentryStr,
             kernelPath: `/${tftpPrefix}/pxe/vmlinuz-efi`,
             initrdPath: `/${tftpPrefix}/pxe/initrd.img`,
             cmd,
             tftpIp: callbackMetaData.runnerHost.ip,
           });
-          shellExec(`mkdir -p ${process.env.TFTP_ROOT}/grub`);
-          fs.writeFileSync(`${process.env.TFTP_ROOT}/grub/grub.cfg`, grubCfg, 'utf8');
-          shellExec(`mkdir -p ${tftpRootPath}/pxe/grub`);
-          fs.writeFileSync(`${tftpRootPath}/pxe/grub/grub.cfg`, grubCfg, 'utf8');
-          console.log('System id:', ` ${systemId.bgBlue.bold.white} `);
+          UnderpostBaremetal.API.writeGrubConfigToFile({ grubCfgSrc });
           UnderpostBaremetal.API.updateKernelFiles({
             commissioningImage,
             resourcesPath,
@@ -862,20 +854,16 @@ rm -rf ${artifacts.join(' ')}`);
           });
           if (!isMounted) throw new Error('NFS root filesystem is not mounted');
         }
-
-        const commissionMonitorPayload = {
-          workflowId,
-          macAddress,
-          underpostRoot,
-          maas: workflowsConfig[workflowId].maas,
-          networkInterfaceName: workflowsConfig[workflowId].networkInterfaceName,
-          ipAddress,
-          hostname,
-        };
-
+        const commissionMonitorPayload = [
+          {
+            macAddress,
+            ipAddress,
+          },
+          { hostname, maas: workflowsConfig[workflowId].maas },
+        ];
         logger.info('Waiting for commissioning...', commissionMonitorPayload);
 
-        const { discovery } = await UnderpostBaremetal.API.commissionMonitor(commissionMonitorPayload);
+        const { discovery } = await UnderpostBaremetal.API.commissionMonitor(...commissionMonitorPayload);
 
         if (type === 'chroot' && options.cloudInit === true) {
           openTerminal(`node ${underpostRoot}/bin baremetal ${workflowId} ${ipAddress} ${hostname} --logs cloud-init`);
@@ -887,6 +875,30 @@ rm -rf ${artifacts.join(' ')}`);
           );
         }
       }
+    },
+
+    /**
+     * @method macAddressFactory
+     * @description Generates or returns a MAC address based on options.
+     * @param {object} options - Options for MAC address generation.
+     * @param {string} options.mac - 'random' for random MAC, specific MAC string, or empty for default.
+     * @returns {string} The generated or specified MAC address.
+     * @memberof UnderpostBaremetal
+     */
+    macAddressFactory(options = { mac: '' }) {
+      const len = 6;
+      const defaultMac = range(1, len)
+        .map(() => '00')
+        .join(':');
+      if (options) {
+        if (!options.mac) options.mac = defaultMac;
+        if (options.mac === 'random')
+          options.mac = range(1, len)
+            .map(() => s4().toLowerCase().substring(0, 2))
+            .join(':');
+      }
+      options.mac = defaultMac;
+      return options;
     },
 
     /**
@@ -1253,6 +1265,31 @@ rm -rf ${artifacts.join(' ')}`);
     },
 
     /**
+     * @method writeGrubConfigToFile
+     * @description Writes the GRUB configuration content to the grub.cfg file in the TFTP root.
+     * @param {object} params - Parameters for the method.
+     * @param {string} params.grubCfgSrc - The GRUB configuration content to write.
+     * @memberof UnderpostBaremetal
+     * @returns {void}
+     */
+    writeGrubConfigToFile({ grubCfgSrc = '' }) {
+      shellExec(`mkdir -p ${process.env.TFTP_ROOT}/grub`);
+      return fs.writeFileSync(`${process.env.TFTP_ROOT}/grub/grub.cfg`, grubCfgSrc, 'utf8');
+    },
+
+    /**
+     * @method getGrubConfigFromFile
+     * @description Reads the GRUB configuration content from the grub.cfg file in the TFTP root.
+     * @memberof UnderpostBaremetal
+     * @returns {string} The GRUB configuration content.
+     */
+    getGrubConfigFromFile() {
+      const grubCfgPath = `${process.env.TFTP_ROOT}/grub/grub.cfg`;
+      const grubCfgSrc = fs.readFileSync(grubCfgPath, 'utf8');
+      return { grubCfgPath, grubCfgSrc };
+    },
+
+    /**
      * @method removeDiscoveredMachines
      * @description Removes all machines in the 'discovered' status from MAAS.
      * @memberof UnderpostBaremetal
@@ -1295,28 +1332,38 @@ rm -rf ${artifacts.join(' ')}`);
      * @param {string} params.initrdPath - The path to the initrd file (relative to TFTP root).
      * @param {string} params.cmd - The kernel command line parameters.
      * @param {string} params.tftpIp - The IP address of the TFTP server.
-     * @returns {string} The generated GRUB configuration content.
+     * @returns {object} An object containing 'grubCfgSrc' the GRUB configuration source string.
      * @memberof UnderpostBaremetal
      */
     grubFactory({ menuentryStr, kernelPath, initrdPath, cmd, tftpIp }) {
-      return `
-set default="0"
-set timeout=10
-insmod nfs
-insmod gzio
-insmod http
-insmod tftp
-set root=(tftp,${tftpIp})
+      return {
+        grubCfgSrc: `
+  set default="0"
+  set timeout=10
+  insmod nfs
+  insmod gzio
+  insmod http
+  insmod tftp
+  set root=(tftp,${tftpIp})
 
-menuentry '${menuentryStr}' {
-    echo "Loading kernel..."
-    linux /${kernelPath} ${cmd}
-    echo "Loading initrd..."
-    initrd /${initrdPath}
-    echo "Booting..."
-    boot
-}
-`;
+  menuentry '${menuentryStr}' {
+      echo "${menuentryStr}"
+      echo " ${Underpost.version}"
+      echo "Date: ${new Date().toISOString()}"
+      ${cmd.match('/MAAS/metadata/by-id/') ? `echo "System ID: ${cmd.split('/MAAS/metadata/by-id/')[1].split('/')[0]}"` : ''}
+      echo "TFTP server: ${tftpIp}"
+      echo "Kernel path: ${kernelPath}"
+      echo "Initrd path: ${initrdPath}"
+      echo "Starting boot process..."
+      echo "Loading kernel..."
+      linux /${kernelPath} ${cmd}
+      echo "Loading initrd..."
+      initrd /${initrdPath}
+      echo "Booting..."
+      boot
+  }
+  `,
+      };
     },
 
     /**
@@ -1401,7 +1448,6 @@ menuentry '${menuentryStr}' {
      * @description Constructs kernel command line parameters for NFS booting.
      * @param {object} options - Options for constructing the command line.
      * @param {string} options.ipClient - The IP address of the client.
-     * @param {string} options.systemId - The system ID of the client.
      * @param {string} options.ipDhcpServer - The IP address of the DHCP server.
      * @param {string} options.ipFileServer - The IP address of the file server.
      * @param {string} options.ipConfig - The IP configuration method (e.g., 'dhcp').
@@ -1420,7 +1466,6 @@ menuentry '${menuentryStr}' {
     kernelCmdBootParamsFactory(
       options = {
         ipClient: '',
-        systemId: '',
         ipDhcpServer: '',
         ipFileServer: '',
         ipConfig: '',
@@ -1438,7 +1483,6 @@ menuentry '${menuentryStr}' {
       // Construct kernel command line arguments for NFS boot.
       const {
         ipClient,
-        systemId,
         ipDhcpServer,
         ipFileServer,
         ipConfig,
@@ -1558,9 +1602,9 @@ menuentry '${menuentryStr}' {
             `cloud-init=verbose`,
             `log_host=${ipDhcpServer}`,
             `log_port=5247`,
-            `cloud-config-url=http://${ipDhcpServer}:5248/MAAS/metadata/by-id/${systemId}/?op=get_preseed`,
+            `cloud-config-url=http://${ipDhcpServer}:5248/MAAS/metadata/by-id/system-id/?op=get_preseed`,
             // `BOOTIF=${macAddress}`,
-            `cc:{'datasource_list':['MAAS']}`,
+            // `cc:{'datasource_list':['MAAS']}`,
           ]);
       }
       cmd.push('---');
@@ -1577,10 +1621,19 @@ menuentry '${menuentryStr}' {
      * @param {object} params - The parameters for the function.
      * @param {string} params.macAddress - The MAC address to monitor for.
      * @param {string} params.ipAddress - The IP address of the machine (used if MAC is all zeros).
+     * @param {object} commisionPayload - The payload for commissioning the machine.
+     * @param {string} commisionPayload.hostname - The hostname for the machine.
+     * @param {object} commisionPayload.maas - Additional MAAS-specific commissioning options.
      * @returns {Promise<void>} A promise that resolves when commissioning is initiated or after a delay.
      * @memberof UnderpostBaremetal
      */
-    async commissionMonitor({ macAddress, ipAddress }) {
+    async commissionMonitor(
+      { macAddress, ipAddress },
+      commisionPayload = {
+        hostname: '',
+        maas: {},
+      },
+    ) {
       {
         // Query observed discoveries from MAAS.
         const discoveries = JSON.parse(
@@ -1599,24 +1652,40 @@ menuentry '${menuentryStr}' {
                 ? discovery.domain
                 : `generic-host-${s4()}${s4()}`;
 
-          console.log(
-            'mac target:'.green + macAddress,
-            'mac discovered:'.green + discovery.mac_address,
-            'ip target:'.green + ipAddress,
-            'ip discovered:'.green + discovery.ip,
-            'hostname:'.blue + hostname,
-          );
+          console.log(hostname.bgBlue.bold.white);
+          console.log('ip target:'.green + ipAddress, 'ip discovered:'.green + discovery.ip);
+          console.log('mac target:'.green + macAddress, 'mac discovered:'.green + discovery.mac_address);
 
           if (discovery.ip === ipAddress) {
             logger.info('Machine discovered!', discovery);
-            return { discovery };
+            let machine;
+            if (commisionPayload && commisionPayload.hostname && commisionPayload.maas) {
+              machine = UnderpostBaremetal.API.machineFactory({
+                ...commisionPayload,
+                ipAddress,
+                macAddress: discovery.mac_address,
+              }).machine;
+              console.log('New machine system id:', machine.system_id.bgYellow.bold.black);
+
+              UnderpostBaremetal.API.writeGrubConfigToFile({
+                grubCfgSrc: UnderpostBaremetal.API.getGrubConfigFromFile().grubCfgSrc.replaceAll(
+                  'system-id',
+                  machine.system_id,
+                ),
+              });
+            }
+
+            return { discovery, machine };
           }
         }
         await timer(1000);
-        return await UnderpostBaremetal.API.commissionMonitor({
-          ipAddress,
-          macAddress,
-        });
+        return await UnderpostBaremetal.API.commissionMonitor(
+          {
+            ipAddress,
+            macAddress,
+          },
+          commisionPayload,
+        );
       }
     },
 
