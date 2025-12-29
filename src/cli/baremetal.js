@@ -168,13 +168,21 @@ class UnderpostBaremetal {
       }
 
       const tftpPrefix = workflowsConfig[workflowId].tftpPrefix || 'rpi4mb';
-      // Define the debootstrap architecture.
-      let debootstrapArch;
 
-      // Set debootstrap architecture.
+      // Generic rootfs bootstrap resolution (distro-agnostic)
+      let bootstrapType;
+      let bootstrapArch;
+
       if (workflowsConfig[workflowId].type === 'chroot') {
-        const { architecture } = workflowsConfig[workflowId].debootstrap.image;
-        debootstrapArch = architecture;
+        if (workflowsConfig[workflowId].debootstrap) {
+          bootstrapType = 'debootstrap';
+          bootstrapArch = workflowsConfig[workflowId].debootstrap.image.architecture;
+        }
+
+        if (workflowsConfig[workflowId].installroot) {
+          bootstrapType = 'installroot';
+          bootstrapArch = workflowsConfig[workflowId].installroot.architecture;
+        }
       }
 
       // Define the database provider ID.
@@ -483,10 +491,9 @@ rm -rf ${artifacts.join(' ')}`);
         if (!workflowsConfig[workflowId]) {
           throw new Error(`Workflow configuration not found for ID: ${workflowId}`);
         }
-        const { debootstrap } = workflowsConfig[workflowId];
         // Copy the chroot command to the clipboard for easy execution.
-        if (debootstrap.image.architecture !== callbackMetaData.runnerHost.architecture)
-          switch (debootstrap.image.architecture) {
+        if (bootstrapArch !== callbackMetaData.runnerHost.architecture)
+          switch (bootstrapArch) {
             case 'arm64':
               pbcopy(`sudo chroot ${nfsHostPath} /usr/bin/qemu-aarch64-static /bin/bash`);
               break;
@@ -590,15 +597,16 @@ rm -rf ${artifacts.join(' ')}`);
         shellExec(`sudo rm -rf ${nfsHostPath}/*`);
         shellExec(`mkdir -p ${nfsHostPath}`);
 
-        // Perform the first stage of debootstrap.
-        {
+        // Build rootfs for chroot workflows
+        if (bootstrapType === 'debootstrap') {
           const { architecture, name } = workflowsConfig[workflowId].debootstrap.image;
+
           shellExec(
             [
               `sudo debootstrap`,
               `--arch=${architecture}`,
               `--variant=minbase`,
-              `--foreign`, // Indicates a two-stage debootstrap.
+              `--foreign`,
               name,
               nfsHostPath,
               `http://ports.ubuntu.com/ubuntu-ports/`,
@@ -611,10 +619,10 @@ rm -rf ${artifacts.join(' ')}`);
         shellExec(`podman ps -a`); // List all podman containers for verification.
 
         // If cross-architecture, copy the QEMU static binary into the chroot.
-        if (debootstrapArch !== callbackMetaData.runnerHost.architecture)
+        if (bootstrapArch !== callbackMetaData.runnerHost.architecture)
           UnderpostBaremetal.API.crossArchBinFactory({
             nfsHostPath,
-            debootstrapArch,
+            bootstrapArch,
           });
 
         // Clean up the temporary podman container.
@@ -630,13 +638,15 @@ rm -rf ${artifacts.join(' ')}`);
           mount: true,
         });
 
-        // Perform the second stage of debootstrap within the chroot environment.
-        UnderpostBaremetal.API.crossArchRunner({
-          nfsHostPath,
-          debootstrapArch,
-          callbackMetaData,
-          steps: [`/debootstrap/debootstrap --second-stage`],
-        });
+        // Perform the second stage of debootstrap within the chroot environment (only for debootstrap-based workflows).
+        if (bootstrapType === 'debootstrap') {
+          UnderpostBaremetal.API.crossArchRunner({
+            nfsHostPath,
+            bootstrapArch,
+            callbackMetaData,
+            steps: [`/debootstrap/debootstrap --second-stage`],
+          });
+        }
         return;
       }
 
@@ -919,7 +929,7 @@ rm -rf ${artifacts.join(' ')}`);
 
           UnderpostBaremetal.API.crossArchRunner({
             nfsHostPath,
-            debootstrapArch,
+            bootstrapArch,
             callbackMetaData,
             steps: [
               ...UnderpostBaremetal.API.systemProvisioningFactory[systemProvisioning].base(),
@@ -936,7 +946,7 @@ rm -rf ${artifacts.join(' ')}`);
         if (options.ubuntuToolsTest)
           UnderpostBaremetal.API.crossArchRunner({
             nfsHostPath,
-            debootstrapArch,
+            bootstrapArch,
             callbackMetaData,
             steps: [
               `chmod +x /underpost/date.sh`,
@@ -2186,11 +2196,11 @@ shell
      * @param {object} params - The parameters for the function.
      * @param {string} params.nfsHostPath - The path to the NFS root filesystem on the host.
      * @memberof UnderpostBaremetal
-     * @param {'arm64'|'amd64'} params.debootstrapArch - The target architecture of the debootstrap environment.
+     * @param {'arm64'|'amd64'} params.bootstrapArch - The target architecture of the bootstrap environment (generic, agnostic of debootstrap or installroot).
      * @returns {void}
      */
-    crossArchBinFactory({ nfsHostPath, debootstrapArch }) {
-      switch (debootstrapArch) {
+    crossArchBinFactory({ nfsHostPath, bootstrapArch }) {
+      switch (bootstrapArch) {
         case 'arm64':
           // Copy QEMU static binary for ARM64.
           shellExec(`sudo podman cp extract:/usr/bin/qemu-aarch64-static ${nfsHostPath}/usr/bin/`);
@@ -2201,7 +2211,7 @@ shell
           break;
         default:
           // Log a warning or throw an error for unsupported architectures.
-          logger.warn(`Unsupported debootstrap architecture: ${debootstrapArch}`);
+          logger.warn(`Unsupported bootstrap architecture: ${bootstrapArch}`);
           break;
       }
       // Install GRUB EFI modules for both architectures to ensure compatibility.
@@ -2215,20 +2225,20 @@ shell
      * optionally using QEMU for cross-architecture execution.
      * @param {object} params - The parameters for the function.
      * @param {string} params.nfsHostPath - The path to the NFS root filesystem on the host.
-     * @param {'arm64'|'amd64'} params.debootstrapArch - The target architecture of the debootstrap environment.
+     * @param {'arm64'|'amd64'} params.bootstrapArch - The target architecture of the bootstrap environment (generic, agnostic of debootstrap or installroot).
      * @param {object} params.callbackMetaData - Metadata about the callback, including runner host architecture.
      * @memberof UnderpostBaremetal
      * @param {string[]} params.steps - An array of shell commands to execute.
      * @returns {void}
      */
-    crossArchRunner({ nfsHostPath, debootstrapArch, callbackMetaData, steps }) {
+    crossArchRunner({ nfsHostPath, bootstrapArch, callbackMetaData, steps }) {
       // Render the steps with logging for better visibility during execution.
       steps = UnderpostBaremetal.API.stepsRender(steps, false);
 
       let qemuCrossArchBash = '';
       // Determine if QEMU is needed for cross-architecture execution.
-      if (debootstrapArch !== callbackMetaData.runnerHost.architecture)
-        switch (debootstrapArch) {
+      if (bootstrapArch !== callbackMetaData.runnerHost.architecture)
+        switch (bootstrapArch) {
           case 'arm64':
             qemuCrossArchBash = '/usr/bin/qemu-aarch64-static ';
             break;
@@ -2329,7 +2339,7 @@ EOF`);
               logger.warn('Nfs path already mounted', mountPath);
               if (unmount === true) {
                 // Unmount if requested.
-                mountCmds.push(`sudo umount ${hostMountPath}`);
+                mountCmds.push(`sudo umount -Rlf ${hostMountPath}`);
               }
             } else {
               if (mount === true) {
@@ -2340,12 +2350,6 @@ EOF`);
               }
             }
           }
-        }
-
-        if (!isMounted) {
-          // if all path unmounted, set ownership and permissions for the NFS host path.
-          shellExec(`sudo chown -R $(whoami):$(whoami) ${nfsHostPath}`);
-          shellExec(`sudo chmod -R 755 ${nfsHostPath}`);
         }
         for (const mountCmd of mountCmds) shellExec(mountCmd);
         if (mount) isMounted = true;
