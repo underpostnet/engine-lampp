@@ -555,7 +555,7 @@ rm -rf ${artifacts.join(' ')}`);
 
       // Handle NFS mount operation.
       if (options.nfsMount === true) {
-        const { isMounted } = UnderpostBaremetal.API.nfsMountCallback({
+        const { isMounted } = await UnderpostBaremetal.API.nfsMountCallback({
           hostname,
           nfsHostPath,
           workflowId,
@@ -566,7 +566,7 @@ rm -rf ${artifacts.join(' ')}`);
 
       // Handle NFS unmount operation.
       if (options.nfsUnmount === true) {
-        const { isMounted } = UnderpostBaremetal.API.nfsMountCallback({
+        const { isMounted } = await UnderpostBaremetal.API.nfsMountCallback({
           hostname,
           nfsHostPath,
           workflowId,
@@ -577,7 +577,7 @@ rm -rf ${artifacts.join(' ')}`);
 
       // Handle NFS root filesystem build operation.
       if (options.nfsBuild === true) {
-        const { isMounted } = UnderpostBaremetal.API.nfsMountCallback({
+        const { isMounted } = await UnderpostBaremetal.API.nfsMountCallback({
           hostname,
           nfsHostPath,
           workflowId,
@@ -623,7 +623,7 @@ rm -rf ${artifacts.join(' ')}`);
         shellExec(`file ${nfsHostPath}/bin/bash`); // Verify the bash executable in the chroot.
 
         // Mount necessary filesystems and register binfmt for the second stage.
-        UnderpostBaremetal.API.nfsMountCallback({
+        await UnderpostBaremetal.API.nfsMountCallback({
           hostname,
           nfsHostPath,
           workflowId,
@@ -974,7 +974,7 @@ rm -rf ${artifacts.join(' ')}`);
         const { type } = workflowsConfig[workflowId];
 
         if (type === 'chroot') {
-          const { isMounted } = UnderpostBaremetal.API.nfsMountCallback({
+          const { isMounted } = await UnderpostBaremetal.API.nfsMountCallback({
             hostname,
             nfsHostPath,
             workflowId,
@@ -2290,7 +2290,7 @@ EOF`);
      * @memberof UnderpostBaremetal
      * @returns {{isMounted: boolean}} An object indicating whether any NFS path is currently mounted.
      */
-    nfsMountCallback({ hostname, nfsHostPath, workflowId, mount, unmount }) {
+    async nfsMountCallback({ hostname, nfsHostPath, workflowId, mount, unmount }) {
       // Mount binfmt_misc filesystem.
       if (mount) UnderpostBaremetal.API.mountBinfmtMisc();
       let isMounted = false;
@@ -2310,8 +2310,17 @@ EOF`);
           for (const mountPath of mounts[mountCmd]) {
             const hostMountPath = `${process.env.NFS_EXPORT_PATH}/${hostname}${mountPath}`;
             // Check if the path is already mounted using `mountpoint` command.
-            const isPathMounted = !shellExec(`mountpoint ${hostMountPath}`, { silent: true, stdout: true }).match(
-              'not a mountpoint',
+            const mountResult = await new Promise((resolve) => {
+              shellExec(`mountpoint ${hostMountPath}`, {
+                silent: true,
+                stdout: true,
+                callback: (code, success, error) => {
+                  return resolve(success ? success : error ? error : '');
+                },
+              });
+            });
+            const isPathMounted = !(
+              mountResult.match('not a mountpoint') || mountResult.match('No such file or directory')
             );
 
             if (isPathMounted) {
