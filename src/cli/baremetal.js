@@ -388,7 +388,16 @@ rm -rf ${artifacts.join(' ')}`);
             PACKER_LOG: '1',
             PATH: `/usr/local/bin:${process.env.PATH || '/usr/bin:/bin'}`,
           };
-          const build = spawnSync('packer', ['build', '-var', `host_is_arm=${isArm}`, '.'], {
+          const packerBuildArgs = ['build', '-var', `host_is_arm=${isArm}`];
+
+          // Add -force flag when using cached mode to allow overwriting existing output directory
+          if (options.packerMaasImageCached) {
+            packerBuildArgs.push('-force');
+          }
+
+          packerBuildArgs.push('.');
+
+          const build = spawnSync('packer', packerBuildArgs, {
             stdio: 'inherit',
             cwd: packerDir,
             env: packerEnv,
@@ -437,7 +446,14 @@ rm -rf ${artifacts.join(' ')}`);
         const uploadCmd = `${uploadScript} ${maasProfile} "${workflow.maas.name}" "${workflow.maas.title}" "${workflow.maas.architecture}" "${workflow.maas.base_image}" "${workflow.maas.filetype}" "${tarballPath}"`;
 
         logger.info(`Uploading to MAAS using: ${uploadScript}`);
-        const uploadResult = shellExec(uploadCmd);
+        const uploadResult = await new Promise((resolve) => {
+          shellExec(uploadCmd, {
+            callback: (code, success, error) => {
+              return resolve({ code, stdout: success, stderr: error });
+            },
+          });
+        });
+
         if (uploadResult.code !== 0) {
           logger.error(`Upload failed with exit code: ${uploadResult.code}`);
           if (uploadResult.stdout) {
@@ -820,7 +836,11 @@ rm -rf ${artifacts.join(' ')}`);
 
         // Clean and create TFTP root path.
         shellExec(`sudo rm -rf ${tftpRootPath}`);
-        shellExec(`mkdir -p ${tftpRootPath}/pxe`);
+        shellExec(`sudo mkdir -p ${tftpRootPath}/pxe`);
+
+        // Set ownership and permissions for TFTP root immediately after creation.
+        shellExec(`sudo chown -R $(whoami):$(whoami) ${process.env.TFTP_ROOT}`);
+        shellExec(`sudo sudo chmod 755 ${process.env.TFTP_ROOT}`);
 
         // Process firmwares for TFTP.
         for (const firmware of firmwares) {
@@ -973,10 +993,6 @@ rm -rf ${artifacts.join(' ')}`);
         // Pass architecture from commissioning or deployment config
         const grubArch = maas.commissioning.architecture;
         UnderpostBaremetal.API.efiGrubModulesFactory({ image: { architecture: grubArch } });
-
-        // Set ownership and permissions for TFTP root.
-        shellExec(`sudo chown -R $(whoami):$(whoami) ${process.env.TFTP_ROOT}`);
-        shellExec(`sudo sudo chmod 755 ${process.env.TFTP_ROOT}`);
 
         UnderpostBaremetal.API.httpBootstrapServerRunnerFactory({
           hostname,
@@ -1248,14 +1264,6 @@ rm -rf ${artifacts.join(' ')}`);
         shellExec(`sudo chown -R $(whoami):$(whoami) ${extractDir}`);
         logger.info(`Extracted casper files from ISO`);
 
-        // Rename kernel and initrd to standard names if needed
-        if (!fs.existsSync(`${extractDir}/vmlinuz`)) {
-          const vmlinuz = shellExec(`ls ${extractDir}/vmlinuz* | head -1`, {
-            silent: true,
-            stdout: true,
-          }).stdout.trim();
-          if (vmlinuz) shellExec(`mv ${vmlinuz} ${extractDir}/vmlinuz`);
-        }
         if (!fs.existsSync(`${extractDir}/initrd`)) {
           const initrd = shellExec(`ls ${extractDir}/initrd* | head -1`, { silent: true, stdout: true }).stdout.trim();
           if (initrd) shellExec(`mv ${initrd} ${extractDir}/initrd`);
@@ -2463,7 +2471,6 @@ EOF`);
             const mountResult = await new Promise((resolve) => {
               shellExec(`mountpoint ${hostMountPath}`, {
                 silent: true,
-                stdout: true,
                 callback: (code, success, error) => {
                   return resolve(success ? success : error ? error : '');
                 },
