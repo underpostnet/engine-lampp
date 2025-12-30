@@ -18,6 +18,7 @@ import UnderpostRepository from './repository.js';
 import { newInstance, range, s4, timer } from '../client/components/core/CommonJs.js';
 import { spawnSync } from 'child_process';
 import Underpost from '../index.js';
+import { stdout } from 'process';
 
 const logger = loggerFactory(import.meta);
 
@@ -179,9 +180,9 @@ class UnderpostBaremetal {
           bootstrapArch = workflowsConfig[workflowId].debootstrap.image.architecture;
         }
 
-        if (workflowsConfig[workflowId].installroot) {
-          bootstrapType = 'installroot';
-          bootstrapArch = workflowsConfig[workflowId].installroot.architecture;
+        if (workflowsConfig[workflowId].container) {
+          bootstrapType = 'container';
+          bootstrapArch = workflowsConfig[workflowId].container.architecture;
         }
       }
 
@@ -522,9 +523,9 @@ rm -rf ${artifacts.join(' ')}`);
       // Handle control server uninstallation.
       if (options.controlServerUninstall === true) {
         // Stop and remove MAAS services, handling potential errors gracefully.
-        shellExec(`sudo snap stop maas.pebble || true`);
+        shellExec(`sudo snap stop maas.pebble`);
         shellExec(`sudo snap stop maas`);
-        shellExec(`sudo snap remove maas --purge || true`);
+        shellExec(`sudo snap remove maas --purge`);
 
         // Remove residual snap data to ensure a clean uninstall.
         shellExec(`sudo rm -rf /var/snap/maas`);
@@ -614,8 +615,104 @@ rm -rf ${artifacts.join(' ')}`);
           );
         }
 
+        if (bootstrapType === 'container') {
+          const { image, architecture } = workflowsConfig[workflowId].container;
+          shellExec(`sudo podman pull --arch=${architecture} ${image}`);
+          const containerName = `bootstrap-${workflowId}`;
+          let extractError = null;
+          try {
+            shellExec(`sudo podman rm -f ${containerName}`);
+            const createResult = shellExec(
+              `sudo podman create --name ${containerName} --replace --arch=${architecture} ${image}`,
+              {
+                silent: false,
+              },
+            );
+
+            if (createResult.code !== 0) {
+              throw new Error(`Failed to create container: ${createResult.stderr}`);
+            }
+
+            // Verify container exists
+            const verifyResult = shellExec(`sudo podman container exists ${containerName}`, {
+              silent: true,
+            });
+
+            if (verifyResult.code !== 0) {
+              throw new Error(`Container ${containerName} was not created successfully`);
+            }
+
+            logger.info(`Extracting container filesystem to ${nfsHostPath}...`);
+
+            // Use podman export with tar extraction (more reliable than mount)
+            const exportResult = shellExec(`sudo podman export ${containerName} | sudo tar -xf - -C ${nfsHostPath}`, {
+              silent: false,
+            });
+
+            if (exportResult.code !== 0) {
+              throw new Error(`Container export failed with exit code ${exportResult.code}: ${exportResult.stderr}`);
+            }
+
+            logger.info('Container filesystem extraction completed successfully');
+          } catch (error) {
+            extractError = error;
+            console.log('Error during container extraction:', error);
+            logger.error(error);
+          } finally {
+            shellExec(`sudo podman rm -f ${containerName}`);
+          }
+
+          if (!fs.existsSync(`${nfsHostPath}/etc`)) {
+            const lsResult = shellExec(`sudo ls -la ${nfsHostPath}`, { silent: false, stdout: true });
+            console.log('Directory listing:', lsResult);
+            if (extractError) {
+              throw new Error(
+                `Failed to extract container filesystem to ${nfsHostPath}. Original error: ${extractError.message}`,
+              );
+            } else {
+              throw new Error(
+                `Failed to extract container filesystem to ${nfsHostPath}. /etc directory does not exist.`,
+              );
+            }
+          }
+        }
+
         // Create a podman container to extract QEMU static binaries.
-        shellExec(`sudo podman create --name extract multiarch/qemu-user-static`);
+        // Use multiple removal attempts to handle stuck containers
+        shellExec(`sudo podman rm -f extract`, { silent: true });
+        shellExec(`sudo podman container rm -f extract`, { silent: true });
+        const extractCreateResult = shellExec(
+          `sudo podman create --name extract --replace docker.io/multiarch/qemu-user-static`,
+          {
+            silent: false,
+          },
+        );
+
+        if (extractCreateResult.code !== 0) {
+          logger.error(
+            `Extract container creation failed. stdout: ${extractCreateResult.stdout}, stderr: ${extractCreateResult.stderr}`,
+          );
+          throw new Error(`Failed to create extract container: ${extractCreateResult.stderr}`);
+        }
+
+        logger.info(`Extract container created successfully: ${extractCreateResult.stdout.trim()}`);
+
+        // Verify extract container exists
+        const extractVerifyResult = shellExec(`sudo podman container exists extract`, {
+          silent: true,
+        });
+
+        if (extractVerifyResult.code !== 0) {
+          const inspectResult = shellExec(`sudo podman ps -a | grep extract || echo "No extract container found"`, {
+            silent: false,
+            stdout: true,
+          });
+          logger.error(`Extract container verification failed. Container list: ${inspectResult}`);
+          throw new Error(`Extract container was not created successfully`);
+        }
+
+        logger.info('Extract container verified successfully');
+
         shellExec(`podman ps -a`); // List all podman containers for verification.
 
         // If cross-architecture, copy the QEMU static binary into the chroot.
@@ -646,6 +743,20 @@ rm -rf ${artifacts.join(' ')}`);
             callbackMetaData,
             steps: [`/debootstrap/debootstrap --second-stage`],
           });
+        }
+
+        if (bootstrapType === 'container') {
+          const { packages } = workflowsConfig[workflowId].container;
+          if (packages && packages.length > 0) {
+            shellExec(`sudo mkdir -p ${nfsHostPath}/etc`);
+            shellExec(`sudo cp /etc/resolv.conf ${nfsHostPath}/etc/resolv.conf`);
+            UnderpostBaremetal.API.crossArchRunner({
+              nfsHostPath,
+              bootstrapArch,
+              callbackMetaData,
+              steps: [`dnf install -y ${packages.join(' ')}`, `dnf clean all`],
+            });
+          }
         }
         return;
       }
@@ -1117,7 +1228,7 @@ rm -rf ${artifacts.join(' ')}`);
       shellExec(`mkdir -p ${mountPoint}`);
 
       // Ensure mount point is not already mounted
-      shellExec(`sudo umount ${mountPoint} 2>/dev/null || true`, { silent: true });
+      shellExec(`sudo umount ${mountPoint} 2>/dev/null`, { silent: true });
 
       try {
         // Mount the ISO
@@ -1759,7 +1870,7 @@ shell
       shellExec(`mkdir -p ${bootstrapHttpServerPath}/${hostname}/cloud-init`);
 
       // Kill any existing HTTP server
-      shellExec(`sudo pkill -f 'python3 -m http.server ${port}' || true`, { silent: true });
+      shellExec(`sudo pkill -f 'python3 -m http.server ${port}'`, { silent: true });
 
       shellExec(
         `cd ${bootstrapHttpServerPath} && nohup python3 -m http.server ${port} --bind 0.0.0.0 > /tmp/http-boot-server.log 2>&1 &`,
@@ -2123,10 +2234,15 @@ shell
      * @memberof UnderpostBaremetal
      * @returns {void}
      */
-    mountBinfmtMisc() {
+    mountBinfmtMisc(workflowId) {
+      const workflowsConfig = UnderpostBaremetal.API.loadWorkflowsConfig();
+      const workflow = workflowsConfig[workflowId];
+
       // Install necessary packages for debootstrap and QEMU.
       shellExec(`sudo dnf install -y iptables-legacy`);
-      shellExec(`sudo dnf install -y debootstrap`);
+      if (workflow && workflow.type === 'chroot' && workflow.debootstrap) {
+        shellExec(`sudo dnf install -y debootstrap`);
+      }
       shellExec(`sudo dnf install -y kernel-modules-extra-$(uname -r)`);
       // Reset QEMU user-static binfmt for proper cross-architecture execution.
       shellExec(`sudo podman run --rm --privileged docker.io/multiarch/qemu-user-static:latest --reset -p yes`);
@@ -2200,20 +2316,39 @@ shell
      * @returns {void}
      */
     crossArchBinFactory({ nfsHostPath, bootstrapArch }) {
+      shellExec(`sudo mkdir -p ${nfsHostPath}/usr/bin`);
+
+      let qemuBinary;
       switch (bootstrapArch) {
         case 'arm64':
-          // Copy QEMU static binary for ARM64.
-          shellExec(`sudo podman cp extract:/usr/bin/qemu-aarch64-static ${nfsHostPath}/usr/bin/`);
+          qemuBinary = 'qemu-aarch64-static';
           break;
         case 'amd64':
-          // Copy QEMU static binary for AMD64.
-          shellExec(`sudo podman cp extract:/usr/bin/qemu-x86_64-static ${nfsHostPath}/usr/bin/`);
+          qemuBinary = 'qemu-x86_64-static';
           break;
         default:
-          // Log a warning or throw an error for unsupported architectures.
           logger.warn(`Unsupported bootstrap architecture: ${bootstrapArch}`);
-          break;
+          return;
       }
+
+      // Extract QEMU static binary using podman export and tar (more reliable than podman cp)
+      const extractResult = shellExec(
+        `sudo podman export extract | sudo tar -xf - -C /tmp --wildcards "usr/bin/${qemuBinary}" && sudo mv /tmp/usr/bin/${qemuBinary} ${nfsHostPath}/usr/bin/ && sudo rm -rf /tmp/usr`,
+        { silent: false },
+      );
+
+      if (extractResult.code !== 0) {
+        logger.error(`Failed to extract QEMU binary: ${extractResult.stderr}`);
+        throw new Error(`Failed to extract QEMU binary for ${bootstrapArch}`);
+      }
+
+      // Verify the binary was copied successfully
+      if (!fs.existsSync(`${nfsHostPath}/usr/bin/${qemuBinary}`)) {
+        throw new Error(`QEMU binary ${qemuBinary} was not extracted to ${nfsHostPath}/usr/bin/`);
+      }
+
+      logger.info(`Successfully extracted ${qemuBinary} to ${nfsHostPath}/usr/bin/`);
+
       // Install GRUB EFI modules for both architectures to ensure compatibility.
       shellExec(`sudo dnf install -y grub2-efi-aa64-modules`);
       shellExec(`sudo dnf install -y grub2-efi-x64-modules`);
@@ -2302,7 +2437,7 @@ EOF`);
      */
     async nfsMountCallback({ hostname, nfsHostPath, workflowId, mount, unmount }) {
       // Mount binfmt_misc filesystem.
-      if (mount) UnderpostBaremetal.API.mountBinfmtMisc();
+      if (mount) UnderpostBaremetal.API.mountBinfmtMisc(workflowId);
       let isMounted = false;
       const mountCmds = [];
       const currentMounts = [];
@@ -2319,6 +2454,11 @@ EOF`);
         for (const mountCmd of Object.keys(mounts)) {
           for (const mountPath of mounts[mountCmd]) {
             const hostMountPath = `${process.env.NFS_EXPORT_PATH}/${hostname}${mountPath}`;
+
+            if (mount) {
+              shellExec(`mkdir -p ${hostMountPath}`);
+            }
+
             // Check if the path is already mounted using `mountpoint` command.
             const mountResult = await new Promise((resolve) => {
               shellExec(`mountpoint ${hostMountPath}`, {
