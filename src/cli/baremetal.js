@@ -18,7 +18,6 @@ import UnderpostRepository from './repository.js';
 import { newInstance, range, s4, timer } from '../client/components/core/CommonJs.js';
 import { spawnSync } from 'child_process';
 import Underpost from '../index.js';
-import { stdout } from 'process';
 
 const logger = loggerFactory(import.meta);
 
@@ -169,21 +168,13 @@ class UnderpostBaremetal {
       }
 
       const tftpPrefix = workflowsConfig[workflowId].tftpPrefix || 'rpi4mb';
+      // Define the debootstrap architecture.
+      let debootstrapArch;
 
-      // Generic rootfs bootstrap resolution (distro-agnostic)
-      let bootstrapType;
-      let bootstrapArch;
-
+      // Set debootstrap architecture.
       if (workflowsConfig[workflowId].type === 'chroot') {
-        if (workflowsConfig[workflowId].debootstrap) {
-          bootstrapType = 'debootstrap';
-          bootstrapArch = workflowsConfig[workflowId].debootstrap.image.architecture;
-        }
-
-        if (workflowsConfig[workflowId].container) {
-          bootstrapType = 'container';
-          bootstrapArch = workflowsConfig[workflowId].container.architecture;
-        }
+        const { architecture } = workflowsConfig[workflowId].debootstrap.image;
+        debootstrapArch = architecture;
       }
 
       // Define the database provider ID.
@@ -388,16 +379,7 @@ rm -rf ${artifacts.join(' ')}`);
             PACKER_LOG: '1',
             PATH: `/usr/local/bin:${process.env.PATH || '/usr/bin:/bin'}`,
           };
-          const packerBuildArgs = ['build', '-var', `host_is_arm=${isArm}`];
-
-          // Add -force flag when using cached mode to allow overwriting existing output directory
-          if (options.packerMaasImageCached) {
-            packerBuildArgs.push('-force');
-          }
-
-          packerBuildArgs.push('.');
-
-          const build = spawnSync('packer', packerBuildArgs, {
+          const build = spawnSync('packer', ['build', '-var', `host_is_arm=${isArm}`, '.'], {
             stdio: 'inherit',
             cwd: packerDir,
             env: packerEnv,
@@ -446,14 +428,7 @@ rm -rf ${artifacts.join(' ')}`);
         const uploadCmd = `${uploadScript} ${maasProfile} "${workflow.maas.name}" "${workflow.maas.title}" "${workflow.maas.architecture}" "${workflow.maas.base_image}" "${workflow.maas.filetype}" "${tarballPath}"`;
 
         logger.info(`Uploading to MAAS using: ${uploadScript}`);
-        const uploadResult = await new Promise((resolve) => {
-          shellExec(uploadCmd, {
-            callback: (code, success, error) => {
-              return resolve({ code, stdout: success, stderr: error });
-            },
-          });
-        });
-
+        const uploadResult = shellExec(uploadCmd);
         if (uploadResult.code !== 0) {
           logger.error(`Upload failed with exit code: ${uploadResult.code}`);
           if (uploadResult.stdout) {
@@ -508,9 +483,10 @@ rm -rf ${artifacts.join(' ')}`);
         if (!workflowsConfig[workflowId]) {
           throw new Error(`Workflow configuration not found for ID: ${workflowId}`);
         }
+        const { debootstrap } = workflowsConfig[workflowId];
         // Copy the chroot command to the clipboard for easy execution.
-        if (bootstrapArch !== callbackMetaData.runnerHost.architecture)
-          switch (bootstrapArch) {
+        if (debootstrap.image.architecture !== callbackMetaData.runnerHost.architecture)
+          switch (debootstrap.image.architecture) {
             case 'arm64':
               pbcopy(`sudo chroot ${nfsHostPath} /usr/bin/qemu-aarch64-static /bin/bash`);
               break;
@@ -579,7 +555,7 @@ rm -rf ${artifacts.join(' ')}`);
 
       // Handle NFS mount operation.
       if (options.nfsMount === true) {
-        const { isMounted } = await UnderpostBaremetal.API.nfsMountCallback({
+        const { isMounted } = UnderpostBaremetal.API.nfsMountCallback({
           hostname,
           nfsHostPath,
           workflowId,
@@ -590,7 +566,7 @@ rm -rf ${artifacts.join(' ')}`);
 
       // Handle NFS unmount operation.
       if (options.nfsUnmount === true) {
-        const { isMounted } = await UnderpostBaremetal.API.nfsMountCallback({
+        const { isMounted } = UnderpostBaremetal.API.nfsMountCallback({
           hostname,
           nfsHostPath,
           workflowId,
@@ -601,7 +577,7 @@ rm -rf ${artifacts.join(' ')}`);
 
       // Handle NFS root filesystem build operation.
       if (options.nfsBuild === true) {
-        const { isMounted } = await UnderpostBaremetal.API.nfsMountCallback({
+        const { isMounted } = UnderpostBaremetal.API.nfsMountCallback({
           hostname,
           nfsHostPath,
           workflowId,
@@ -614,16 +590,15 @@ rm -rf ${artifacts.join(' ')}`);
         shellExec(`sudo rm -rf ${nfsHostPath}/*`);
         shellExec(`mkdir -p ${nfsHostPath}`);
 
-        // Build rootfs for chroot workflows
-        if (bootstrapType === 'debootstrap') {
+        // Perform the first stage of debootstrap.
+        {
           const { architecture, name } = workflowsConfig[workflowId].debootstrap.image;
-
           shellExec(
             [
               `sudo debootstrap`,
               `--arch=${architecture}`,
               `--variant=minbase`,
-              `--foreign`,
+              `--foreign`, // Indicates a two-stage debootstrap.
               name,
               nfsHostPath,
               `http://ports.ubuntu.com/ubuntu-ports/`,
@@ -631,111 +606,15 @@ rm -rf ${artifacts.join(' ')}`);
           );
         }
 
-        if (bootstrapType === 'container') {
-          const { image, architecture } = workflowsConfig[workflowId].container;
-          shellExec(`sudo podman pull --arch=${architecture} ${image}`);
-          const containerName = `bootstrap-${workflowId}`;
-          let extractError = null;
-          try {
-            shellExec(`sudo podman rm -f ${containerName}`);
-            const createResult = shellExec(
-              `sudo podman create --name ${containerName} --replace --arch=${architecture} ${image}`,
-              {
-                silent: false,
-              },
-            );
-
-            if (createResult.code !== 0) {
-              throw new Error(`Failed to create container: ${createResult.stderr}`);
-            }
-
-            // Verify container exists
-            const verifyResult = shellExec(`sudo podman container exists ${containerName}`, {
-              silent: true,
-            });
-
-            if (verifyResult.code !== 0) {
-              throw new Error(`Container ${containerName} was not created successfully`);
-            }
-
-            logger.info(`Extracting container filesystem to ${nfsHostPath}...`);
-
-            // Use podman export with tar extraction (more reliable than mount)
-            const exportResult = shellExec(`sudo podman export ${containerName} | sudo tar -xf - -C ${nfsHostPath}`, {
-              silent: false,
-            });
-
-            if (exportResult.code !== 0) {
-              throw new Error(`Container export failed with exit code ${exportResult.code}: ${exportResult.stderr}`);
-            }
-
-            logger.info('Container filesystem extraction completed successfully');
-          } catch (error) {
-            extractError = error;
-            console.log('Error during container extraction:', error);
-            logger.error(error);
-          } finally {
-            shellExec(`sudo podman rm -f ${containerName}`);
-          }
-
-          if (!fs.existsSync(`${nfsHostPath}/etc`)) {
-            const lsResult = shellExec(`sudo ls -la ${nfsHostPath}`, { silent: false, stdout: true });
-            console.log('Directory listing:', lsResult);
-            if (extractError) {
-              throw new Error(
-                `Failed to extract container filesystem to ${nfsHostPath}. Original error: ${extractError.message}`,
-              );
-            } else {
-              throw new Error(
-                `Failed to extract container filesystem to ${nfsHostPath}. /etc directory does not exist.`,
-              );
-            }
-          }
-        }
-
         // Create a podman container to extract QEMU static binaries.
-        // Use multiple removal attempts to handle stuck containers
-        shellExec(`sudo podman rm -f extract`, { silent: true });
-        shellExec(`sudo podman container rm -f extract`, { silent: true });
-        const extractCreateResult = shellExec(
-          `sudo podman create --name extract --replace docker.io/multiarch/qemu-user-static`,
-          {
-            silent: false,
-          },
-        );
-
-        if (extractCreateResult.code !== 0) {
-          logger.error(
-            `Extract container creation failed. stdout: ${extractCreateResult.stdout}, stderr: ${extractCreateResult.stderr}`,
-          );
-          throw new Error(`Failed to create extract container: ${extractCreateResult.stderr}`);
-        }
-
-        logger.info(`Extract container created successfully: ${extractCreateResult.stdout.trim()}`);
-
-        // Verify extract container exists
-        const extractVerifyResult = shellExec(`sudo podman container exists extract`, {
-          silent: true,
-        });
-
-        if (extractVerifyResult.code !== 0) {
-          const inspectResult = shellExec(`sudo podman ps -a | grep extract || echo "No extract container found"`, {
-            silent: false,
-            stdout: true,
-          });
-          logger.error(`Extract container verification failed. Container list: ${inspectResult}`);
-          throw new Error(`Extract container was not created successfully`);
-        }
-
-        logger.info('Extract container verified successfully');
-
+        shellExec(`sudo podman create --name extract multiarch/qemu-user-static`);
         shellExec(`podman ps -a`); // List all podman containers for verification.
 
         // If cross-architecture, copy the QEMU static binary into the chroot.
-        if (bootstrapArch !== callbackMetaData.runnerHost.architecture)
+        if (debootstrapArch !== callbackMetaData.runnerHost.architecture)
           UnderpostBaremetal.API.crossArchBinFactory({
             nfsHostPath,
-            bootstrapArch,
+            debootstrapArch,
           });
 
         // Clean up the temporary podman container.
@@ -744,36 +623,20 @@ rm -rf ${artifacts.join(' ')}`);
         shellExec(`file ${nfsHostPath}/bin/bash`); // Verify the bash executable in the chroot.
 
         // Mount necessary filesystems and register binfmt for the second stage.
-        await UnderpostBaremetal.API.nfsMountCallback({
+        UnderpostBaremetal.API.nfsMountCallback({
           hostname,
           nfsHostPath,
           workflowId,
           mount: true,
         });
 
-        // Perform the second stage of debootstrap within the chroot environment (only for debootstrap-based workflows).
-        if (bootstrapType === 'debootstrap') {
-          UnderpostBaremetal.API.crossArchRunner({
-            nfsHostPath,
-            bootstrapArch,
-            callbackMetaData,
-            steps: [`/debootstrap/debootstrap --second-stage`],
-          });
-        }
-
-        if (bootstrapType === 'container') {
-          const { packages } = workflowsConfig[workflowId].container;
-          if (packages && packages.length > 0) {
-            shellExec(`sudo mkdir -p ${nfsHostPath}/etc`);
-            shellExec(`sudo cp /etc/resolv.conf ${nfsHostPath}/etc/resolv.conf`);
-            UnderpostBaremetal.API.crossArchRunner({
-              nfsHostPath,
-              bootstrapArch,
-              callbackMetaData,
-              steps: [`dnf install -y ${packages.join(' ')}`, `dnf clean all`],
-            });
-          }
-        }
+        // Perform the second stage of debootstrap within the chroot environment.
+        UnderpostBaremetal.API.crossArchRunner({
+          nfsHostPath,
+          debootstrapArch,
+          callbackMetaData,
+          steps: [`/debootstrap/debootstrap --second-stage`],
+        });
         return;
       }
 
@@ -836,11 +699,7 @@ rm -rf ${artifacts.join(' ')}`);
 
         // Clean and create TFTP root path.
         shellExec(`sudo rm -rf ${tftpRootPath}`);
-        shellExec(`sudo mkdir -p ${tftpRootPath}/pxe`);
-
-        // Set ownership and permissions for TFTP root immediately after creation.
-        shellExec(`sudo chown -R $(whoami):$(whoami) ${process.env.TFTP_ROOT}`);
-        shellExec(`sudo sudo chmod 755 ${process.env.TFTP_ROOT}`);
+        shellExec(`mkdir -p ${tftpRootPath}/pxe`);
 
         // Process firmwares for TFTP.
         for (const firmware of firmwares) {
@@ -994,6 +853,10 @@ rm -rf ${artifacts.join(' ')}`);
         const grubArch = maas.commissioning.architecture;
         UnderpostBaremetal.API.efiGrubModulesFactory({ image: { architecture: grubArch } });
 
+        // Set ownership and permissions for TFTP root.
+        shellExec(`sudo chown -R $(whoami):$(whoami) ${process.env.TFTP_ROOT}`);
+        shellExec(`sudo sudo chmod 755 ${process.env.TFTP_ROOT}`);
+
         UnderpostBaremetal.API.httpBootstrapServerRunnerFactory({
           hostname,
           bootstrapHttpServerPath,
@@ -1056,7 +919,7 @@ rm -rf ${artifacts.join(' ')}`);
 
           UnderpostBaremetal.API.crossArchRunner({
             nfsHostPath,
-            bootstrapArch,
+            debootstrapArch,
             callbackMetaData,
             steps: [
               ...UnderpostBaremetal.API.systemProvisioningFactory[systemProvisioning].base(),
@@ -1073,7 +936,7 @@ rm -rf ${artifacts.join(' ')}`);
         if (options.ubuntuToolsTest)
           UnderpostBaremetal.API.crossArchRunner({
             nfsHostPath,
-            bootstrapArch,
+            debootstrapArch,
             callbackMetaData,
             steps: [
               `chmod +x /underpost/date.sh`,
@@ -1111,7 +974,7 @@ rm -rf ${artifacts.join(' ')}`);
         const { type } = workflowsConfig[workflowId];
 
         if (type === 'chroot') {
-          const { isMounted } = await UnderpostBaremetal.API.nfsMountCallback({
+          const { isMounted } = UnderpostBaremetal.API.nfsMountCallback({
             hostname,
             nfsHostPath,
             workflowId,
@@ -1264,6 +1127,14 @@ rm -rf ${artifacts.join(' ')}`);
         shellExec(`sudo chown -R $(whoami):$(whoami) ${extractDir}`);
         logger.info(`Extracted casper files from ISO`);
 
+        // Rename kernel and initrd to standard names if needed
+        if (!fs.existsSync(`${extractDir}/vmlinuz`)) {
+          const vmlinuz = shellExec(`ls ${extractDir}/vmlinuz* | head -1`, {
+            silent: true,
+            stdout: true,
+          }).stdout.trim();
+          if (vmlinuz) shellExec(`mv ${vmlinuz} ${extractDir}/vmlinuz`);
+        }
         if (!fs.existsSync(`${extractDir}/initrd`)) {
           const initrd = shellExec(`ls ${extractDir}/initrd* | head -1`, { silent: true, stdout: true }).stdout.trim();
           if (initrd) shellExec(`mv ${initrd} ${extractDir}/initrd`);
@@ -2242,15 +2113,10 @@ shell
      * @memberof UnderpostBaremetal
      * @returns {void}
      */
-    mountBinfmtMisc(workflowId) {
-      const workflowsConfig = UnderpostBaremetal.API.loadWorkflowsConfig();
-      const workflow = workflowsConfig[workflowId];
-
+    mountBinfmtMisc() {
       // Install necessary packages for debootstrap and QEMU.
       shellExec(`sudo dnf install -y iptables-legacy`);
-      if (workflow && workflow.type === 'chroot' && workflow.debootstrap) {
-        shellExec(`sudo dnf install -y debootstrap`);
-      }
+      shellExec(`sudo dnf install -y debootstrap`);
       shellExec(`sudo dnf install -y kernel-modules-extra-$(uname -r)`);
       // Reset QEMU user-static binfmt for proper cross-architecture execution.
       shellExec(`sudo podman run --rm --privileged docker.io/multiarch/qemu-user-static:latest --reset -p yes`);
@@ -2320,43 +2186,24 @@ shell
      * @param {object} params - The parameters for the function.
      * @param {string} params.nfsHostPath - The path to the NFS root filesystem on the host.
      * @memberof UnderpostBaremetal
-     * @param {'arm64'|'amd64'} params.bootstrapArch - The target architecture of the bootstrap environment (generic, agnostic of debootstrap or installroot).
+     * @param {'arm64'|'amd64'} params.debootstrapArch - The target architecture of the debootstrap environment.
      * @returns {void}
      */
-    crossArchBinFactory({ nfsHostPath, bootstrapArch }) {
-      shellExec(`sudo mkdir -p ${nfsHostPath}/usr/bin`);
-
-      let qemuBinary;
-      switch (bootstrapArch) {
+    crossArchBinFactory({ nfsHostPath, debootstrapArch }) {
+      switch (debootstrapArch) {
         case 'arm64':
-          qemuBinary = 'qemu-aarch64-static';
+          // Copy QEMU static binary for ARM64.
+          shellExec(`sudo podman cp extract:/usr/bin/qemu-aarch64-static ${nfsHostPath}/usr/bin/`);
           break;
         case 'amd64':
-          qemuBinary = 'qemu-x86_64-static';
+          // Copy QEMU static binary for AMD64.
+          shellExec(`sudo podman cp extract:/usr/bin/qemu-x86_64-static ${nfsHostPath}/usr/bin/`);
           break;
         default:
-          logger.warn(`Unsupported bootstrap architecture: ${bootstrapArch}`);
-          return;
+          // Log a warning or throw an error for unsupported architectures.
+          logger.warn(`Unsupported debootstrap architecture: ${debootstrapArch}`);
+          break;
       }
-
-      // Extract QEMU static binary using podman export and tar (more reliable than podman cp)
-      const extractResult = shellExec(
-        `sudo podman export extract | sudo tar -xf - -C /tmp --wildcards "usr/bin/${qemuBinary}" && sudo mv /tmp/usr/bin/${qemuBinary} ${nfsHostPath}/usr/bin/ && sudo rm -rf /tmp/usr`,
-        { silent: false },
-      );
-
-      if (extractResult.code !== 0) {
-        logger.error(`Failed to extract QEMU binary: ${extractResult.stderr}`);
-        throw new Error(`Failed to extract QEMU binary for ${bootstrapArch}`);
-      }
-
-      // Verify the binary was copied successfully
-      if (!fs.existsSync(`${nfsHostPath}/usr/bin/${qemuBinary}`)) {
-        throw new Error(`QEMU binary ${qemuBinary} was not extracted to ${nfsHostPath}/usr/bin/`);
-      }
-
-      logger.info(`Successfully extracted ${qemuBinary} to ${nfsHostPath}/usr/bin/`);
-
       // Install GRUB EFI modules for both architectures to ensure compatibility.
       shellExec(`sudo dnf install -y grub2-efi-aa64-modules`);
       shellExec(`sudo dnf install -y grub2-efi-x64-modules`);
@@ -2368,20 +2215,20 @@ shell
      * optionally using QEMU for cross-architecture execution.
      * @param {object} params - The parameters for the function.
      * @param {string} params.nfsHostPath - The path to the NFS root filesystem on the host.
-     * @param {'arm64'|'amd64'} params.bootstrapArch - The target architecture of the bootstrap environment (generic, agnostic of debootstrap or installroot).
+     * @param {'arm64'|'amd64'} params.debootstrapArch - The target architecture of the debootstrap environment.
      * @param {object} params.callbackMetaData - Metadata about the callback, including runner host architecture.
      * @memberof UnderpostBaremetal
      * @param {string[]} params.steps - An array of shell commands to execute.
      * @returns {void}
      */
-    crossArchRunner({ nfsHostPath, bootstrapArch, callbackMetaData, steps }) {
+    crossArchRunner({ nfsHostPath, debootstrapArch, callbackMetaData, steps }) {
       // Render the steps with logging for better visibility during execution.
       steps = UnderpostBaremetal.API.stepsRender(steps, false);
 
       let qemuCrossArchBash = '';
       // Determine if QEMU is needed for cross-architecture execution.
-      if (bootstrapArch !== callbackMetaData.runnerHost.architecture)
-        switch (bootstrapArch) {
+      if (debootstrapArch !== callbackMetaData.runnerHost.architecture)
+        switch (debootstrapArch) {
           case 'arm64':
             qemuCrossArchBash = '/usr/bin/qemu-aarch64-static ';
             break;
@@ -2443,9 +2290,9 @@ EOF`);
      * @memberof UnderpostBaremetal
      * @returns {{isMounted: boolean}} An object indicating whether any NFS path is currently mounted.
      */
-    async nfsMountCallback({ hostname, nfsHostPath, workflowId, mount, unmount }) {
+    nfsMountCallback({ hostname, nfsHostPath, workflowId, mount, unmount }) {
       // Mount binfmt_misc filesystem.
-      if (mount) UnderpostBaremetal.API.mountBinfmtMisc(workflowId);
+      if (mount) UnderpostBaremetal.API.mountBinfmtMisc();
       let isMounted = false;
       const mountCmds = [];
       const currentMounts = [];
@@ -2462,22 +2309,9 @@ EOF`);
         for (const mountCmd of Object.keys(mounts)) {
           for (const mountPath of mounts[mountCmd]) {
             const hostMountPath = `${process.env.NFS_EXPORT_PATH}/${hostname}${mountPath}`;
-
-            if (mount) {
-              shellExec(`mkdir -p ${hostMountPath}`);
-            }
-
             // Check if the path is already mounted using `mountpoint` command.
-            const mountResult = await new Promise((resolve) => {
-              shellExec(`mountpoint ${hostMountPath}`, {
-                silent: true,
-                callback: (code, success, error) => {
-                  return resolve(success ? success : error ? error : '');
-                },
-              });
-            });
-            const isPathMounted = !(
-              mountResult.match('not a mountpoint') || mountResult.match('No such file or directory')
+            const isPathMounted = !shellExec(`mountpoint ${hostMountPath}`, { silent: true, stdout: true }).match(
+              'not a mountpoint',
             );
 
             if (isPathMounted) {
@@ -2486,7 +2320,7 @@ EOF`);
               logger.warn('Nfs path already mounted', mountPath);
               if (unmount === true) {
                 // Unmount if requested.
-                mountCmds.push(`sudo umount -Rlf ${hostMountPath}`);
+                mountCmds.push(`sudo umount ${hostMountPath}`);
               }
             } else {
               if (mount === true) {
@@ -2497,6 +2331,12 @@ EOF`);
               }
             }
           }
+        }
+
+        if (!isMounted) {
+          // if all path unmounted, set ownership and permissions for the NFS host path.
+          shellExec(`sudo chown -R $(whoami):$(whoami) ${nfsHostPath}`);
+          shellExec(`sudo chmod -R 755 ${nfsHostPath}`);
         }
         for (const mountCmd of mountCmds) shellExec(mountCmd);
         if (mount) isMounted = true;
