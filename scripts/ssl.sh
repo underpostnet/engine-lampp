@@ -48,13 +48,7 @@ info "Outputs: $CERT_FILE, $KEY_FILE, $FULLCHAIN_FILE, $ROOT_PEM"
 
 # Install prerequisites
 if ! command -v dnf >/dev/null 2>&1; then err "dnf not found. This script expects RHEL/Rocky with dnf."; exit 1; fi
-
-SUDO=""
-if [ "$EUID" -ne 0 ]; then
-  SUDO="sudo"
-fi
-
-$SUDO dnf install -y curl nss-tools ca-certificates
+sudo dnf install -y curl nss-tools ca-certificates
 
 # Download and install mkcert binary (no 'go install')
 download_mkcert_binary() {
@@ -74,8 +68,8 @@ download_mkcert_binary() {
   if [[ -z "$ASSET_URL" ]]; then err "Could not find mkcert asset for your arch"; return 1; fi
   TMP_BIN="$(mktemp -u /tmp/mkcert.XXXXXX)"
   if curl -fSL -o "$TMP_BIN" "$ASSET_URL"; then
-    $SUDO mv "$TMP_BIN" /usr/local/bin/mkcert
-    $SUDO chmod +x /usr/local/bin/mkcert
+    sudo mv "$TMP_BIN" /usr/local/bin/mkcert
+    sudo chmod +x /usr/local/bin/mkcert
     info "mkcert installed to /usr/local/bin/mkcert"
     return 0
   fi
@@ -89,7 +83,7 @@ use_mkcert() {
   fi
   MKCERT_BIN="$(command -v mkcert || echo /usr/local/bin/mkcert)"
   info "Running mkcert -install as sudo (if necessary)"
-  if ! $SUDO "$MKCERT_BIN" -install >/dev/null 2>&1; then
+  if ! sudo "$MKCERT_BIN" -install >/dev/null 2>&1; then
     if ! "$MKCERT_BIN" -install >/dev/null 2>&1; then
       err "mkcert -install failed"; return 1
     fi
@@ -141,8 +135,8 @@ use_openssl() {
     mv -f "$CSR_KEY" "$KEY_FILE"
     # create fullchain: leaf + root
     cat "$CERT_FILE" "$ROOT_PEM" > "$FULLCHAIN_FILE"
-    $SUDO cp "$ROOT_PEM" /etc/pki/ca-trust/source/anchors/
-    $SUDO update-ca-trust extract
+    sudo cp "$ROOT_PEM" /etc/pki/ca-trust/source/anchors/
+    sudo update-ca-trust extract
     if command -v certutil >/dev/null 2>&1; then
       mkdir -p "$HOME/.pki/nssdb"
       certutil -d sql:$HOME/.pki/nssdb -A -t "CT,C,C" -n "Local Dev Root CA" -i "$ROOT_PEM"
