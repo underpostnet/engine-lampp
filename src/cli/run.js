@@ -1064,15 +1064,20 @@ EOF
           `git config user.email '${email}' && ` +
           `git config credential.interactive always &&` +
           `git config pull.rebase false`,
+        {
+          disableLog: true,
+          silent: true,
+        },
       );
 
-      console.log(
-        shellExec(`git config list`, { silent: true, stdout: true })
-          .replaceAll('user.email', 'user.email'.yellow)
-          .replaceAll(username, username.green)
-          .replaceAll('user.name', 'user.name'.yellow)
-          .replaceAll(email, email.green),
-      );
+      if (options.logs)
+        console.log(
+          shellExec(`git config list`, { silent: true, stdout: true })
+            .replaceAll('user.email', 'user.email'.yellow)
+            .replaceAll(username, username.green)
+            .replaceAll('user.name', 'user.name'.yellow)
+            .replaceAll(email, email.green),
+        );
     },
 
     /**
@@ -1300,7 +1305,11 @@ EOF
             });
       }
       await awaitDeployMonitor(true);
-      shellExec(`npm run dev-proxy ${deployId} ${subConf} ${host} ${_path}${options.tls ? ' tls' : ''}`);
+      shellExec(
+        `./node_modules/.bin/env-cmd -f .env.development node src/proxy proxy ${deployId} ${subConf} ${host} ${_path}${
+          options.tls ? ' tls' : ''
+        }`,
+      );
     },
 
     /**
