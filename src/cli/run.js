@@ -1244,7 +1244,7 @@ EOF
     'disk-devices': async (path = '/', options = DEFAULT_OPTION) => {
       const { underpostRoot } = options;
       shellExec(`chmod +x ${underpostRoot}/scripts/disk-devices.sh`);
-      shellExec(`./scripts/disk-devices.sh`);
+      shellExec(`${underpostRoot}/scripts/disk-devices.sh`);
     },
 
     /**
