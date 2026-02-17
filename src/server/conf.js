@@ -1167,10 +1167,9 @@ const getPathsSSR = (conf) => {
 };
 
 /**
- * @method CmdUnderpost
+ * @method Cmd
  * @description The command factory.
  * @memberof ServerConfBuilder
- * @namespace CmdUnderpost
  */
 const Cmd = {
   /**
@@ -1185,7 +1184,7 @@ const Cmd = {
    * @description Builds the deploy.
    * @param {string} deployId - The deploy ID.
    * @returns {string} - The build command.
-   * @memberof CmdUnderpost
+   * @memberof Cmd
    */
   build: (deployId) => `node bin/deploy build-full-client ${deployId}`,
   /**
@@ -1194,7 +1193,7 @@ const Cmd = {
    * @param {string} deployId - The deploy ID.
    * @param {string} env - The environment.
    * @returns {string} - The conf command.
-   * @memberof CmdUnderpost
+   * @memberof Cmd
    */
   conf: (deployId, env) => `node bin/deploy conf ${deployId} ${env ? env : 'production'}`,
   /**
@@ -1204,14 +1203,14 @@ const Cmd = {
    * @param {string} host - The host.
    * @param {string} path - The path.
    * @returns {string} - The replica command.
-   * @memberof CmdUnderpost
+   * @memberof Cmd
    */
   replica: (deployId, host, path) => `node bin/deploy build-single-replica ${deployId} ${host} ${path}`,
   /**
    * @method syncPorts
    * @description Syncs the ports.
    * @returns {string} - The sync ports command.
-   * @memberof CmdUnderpost
+   * @memberof Cmd
    */
   syncPorts: () => `node bin/deploy sync-env-port`,
 };

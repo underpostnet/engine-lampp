@@ -4,7 +4,7 @@ import { loggerFactory } from '../server/logger.js';
 /**
  * Module for managing and loading various database connections (e.g., Mongoose, MariaDB).
  * @module src/db/DataBaseProvider.js
- * @namespace DataBaseProviderService
+ * @namespace DataBaseProviderNamespace
  */
 
 const logger = loggerFactory(import.meta);
@@ -12,7 +12,7 @@ const logger = loggerFactory(import.meta);
 /**
  * @class
  * @alias DataBaseProviderService
- * @memberof DataBaseProviderService
+ * @memberof DataBaseProviderNamespace
  * @classdesc Centralized service for loading, managing, and accessing multiple database connections
  * based on application configuration (host, path, provider type).
  */
@@ -90,7 +90,7 @@ class DataBaseProviderService {
 /**
  * Singleton instance of the DataBaseProviderService class for backward compatibility.
  * @alias DataBaseProvider
- * @memberof DataBaseProviderService
+ * @memberof DataBaseProviderNamespace
  * @type {DataBaseProviderService}
  */
 const DataBaseProvider = new DataBaseProviderService();

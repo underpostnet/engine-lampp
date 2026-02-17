@@ -5,7 +5,7 @@ import { getCapVariableName } from '../../client/components/core/CommonJs.js';
 /**
  * Module for connecting to and loading models for a MongoDB database using Mongoose.
  * @module src/db/MongooseDB.js
- * @namespace MongooseDBService
+ * @namespace MongooseDBNamespace
  */
 
 const logger = loggerFactory(import.meta);
@@ -13,7 +13,7 @@ const logger = loggerFactory(import.meta);
 /**
  * @class
  * @alias MongooseDBService
- * @memberof MongooseDBService
+ * @memberof MongooseDBNamespace
  * @classdesc Manages the Mongoose connection lifecycle and dynamic loading of database models
  * based on API configuration.
  */
@@ -66,7 +66,7 @@ class MongooseDBService {
 /**
  * Singleton instance of the MongooseDBService class for backward compatibility.
  * @alias MongooseDB
- * @memberof MongooseDBService
+ * @memberof MongooseDBNamespace
  * @type {MongooseDBService}
  */
 const MongooseDB = new MongooseDBService();
