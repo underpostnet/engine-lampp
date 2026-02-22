@@ -1,4 +1,4 @@
-## underpost ci/cd cli v2.99.8
+## underpost ci/cd cli v3.0.0
 
 ### Usage: `underpost [options] [command]`
   ```
@@ -31,7 +31,7 @@ Commands:
   monitor [options] <deploy-id> [env]                        Manages health server monitoring for specified deployments.
   ssh [options]                                              Manages SSH credentials and sessions for remote access to cluster nodes or services.
   run [options] <runner-id> [path]                           Runs specified scripts using various runners.
-  lxd [options]                                              Manages LXD containers and virtual machines.
+  lxd [options]                                              Manages LXD virtual machines as K3s nodes (control plane or workers).
   baremetal [options] [workflow-id]                          Manages baremetal server operations, including installation, database setup, commissioning, and user management.
   help [command]                                             display help for command
  
@@ -370,6 +370,8 @@ Options:
                                        4.4 service.
   --valkey                             Initializes the cluster with a Valkey
                                        service.
+  --ipfs                               Initializes the cluster with an
+                                       ipfs-cluster statefulset.
   --contour                            Initializes the cluster with Project
                                        Contour base HTTPProxy and Envoy.
   --cert-manager                       Initializes the cluster with a Let's
@@ -408,7 +410,6 @@ Options:
                                        by init-host.
   --config                             Sets the base Kubernetes node
                                        configuration.
-  --worker                             Sets the context for a worker node.
   --chown                              Sets the appropriate ownership for
                                        Kubernetes kubeconfig files.
   --k3s                                Initializes the cluster using K3s
@@ -419,6 +420,8 @@ Options:
                                        after execution.
   --namespace <namespace>              Kubernetes namespace for cluster
                                        operations (defaults to "default").
+  --replicas <replicas>                Sets a custom number of replicas for
+                                       statefulset deployments.
   -h, --help                           display help for command
  
 ```
@@ -491,6 +494,9 @@ Options:
                                       deployment operations.
   --port <port>                       Sets up port forwarding from local to
                                       remote ports.
+  --expose-port <port>                Sets the local:remote port to expose when
+                                      --expose is active (overrides
+                                      auto-detected service port).
   --cmd <cmd>                         Custom initialization command for
                                       deployment (comma-separated commands).
   -h, --help                          display help for command
@@ -904,47 +910,48 @@ Options:
 ```
  Usage: underpost lxd [options]
 
-Manages LXD containers and virtual machines.
+Manages LXD virtual machines as K3s nodes (control plane or workers).
 
 Options:
-  --init                           Initializes LXD on the current machine.
-  --reset                          Resets LXD on the current machine, deleting
-                                   all configurations.
-  --install                        Installs LXD on the current machine.
-  --dev                            Sets the development context environment for
-                                   LXD.
-  --create-virtual-network         Creates an LXD virtual network bridge.
-  --create-admin-profile           Creates an admin profile for LXD management.
-  --control                        Sets the context for a control node VM.
-  --worker                         Sets the context for a worker node VM.
-  --create-vm <vm-id>              Creates default virtual machines with the
-                                   specified ID.
-  --init-vm <vm-id>                Retrieves the Underpost initialization
-                                   script for the specified VM.
-  --info-vm <vm-id>                Retrieves all information about the
+  --init                           Initializes LXD on the current machine via
+                                   preseed.
+  --reset                          Removes the LXD snap and purges all data.
+  --install                        Installs the LXD snap.
+  --dev                            Use local paths instead of the global npm
+                                   installation.
+  --create-virtual-network         Creates the lxdbr0 bridge network.
+  --ipv4-address <cidr>            IPv4 address/CIDR for the lxdbr0 bridge
+                                   network (default: "10.250.250.1/24").
+  --create-admin-profile           Creates the admin-profile for VM management.
+  --control                        Initialize the target VM as a K3s control
+                                   plane node.
+  --worker                         Initialize the target VM as a K3s worker
+                                   node.
+  --create-vm <vm-name>            Copy the LXC launch command for a new K3s VM
+                                   to the clipboard.
+  --delete-vm <vm-name>            Stop and delete the specified VM.
+  --init-vm <vm-name>              Run k3s-node-setup.sh on the specified VM
+                                   (use with --control or --worker).
+  --info-vm <vm-name>              Display full configuration and status for
+                                   the specified VM.
+  --test <vm-name>                 Run connectivity and health checks on the
                                    specified VM.
-  --test <vm-id>                   Tests the health, status, and network
-                                   connectivity for a VM.
-  --root-size <gb-size>            Sets the root partition size (in GB) for the
-                                   VM.
-  --k3s                            Flag to indicate that the VM initialization
-                                   is for a K3s cluster type.
-  --join-node <nodes>              A comma-separated list of worker and control
-                                   nodes to join (e.g.,
-                                   "k8s-worker-1,k8s-control").
-  --expose <vm-name-ports>         Exposes specified ports on a VM (e.g.,
-                                   "k8s-control:80,443"). Multiple VM-port
-                                   pairs can be comma-separated.
-  --delete-expose <vm-name-ports>  Removes exposed ports on a VM (e.g.,
-                                   "k8s-control:80,443"). Multiple VM-port
-                                   pairs can be comma-separated.
-  --workflow-id <workflow-id>      Sets the workflow ID context for LXD
-                                   operations.
-  --vm-id <vm-id>                  Sets the VM ID context for LXD operations.
-  --deploy-id <deploy-id>          Sets the deployment ID context for LXD
-                                   operations.
-  --namespace <namespace>          Kubernetes namespace for LXD operations
-                                   (defaults to "default").
+  --root-size <gb-size>            Root disk size in GiB for --create-vm
+                                   (default: 32).
+  --join-node <nodes>              Join a K3s worker to a control plane.
+                                   Standalone format: "workerName,controlName".
+                                   When used with --init-vm --worker, provide
+                                   just the control node name for auto-join.
+  --expose <vm-name:ports>         Proxy host ports to a VM (e.g.,
+                                   "k3s-control:80,443").
+  --delete-expose <vm-name:ports>  Remove proxied ports from a VM (e.g.,
+                                   "k3s-control:80,443").
+  --workflow-id <workflow-id>      Workflow ID to execute via runWorkflow.
+  --vm-id <vm-name>                Target VM name for workflow execution.
+  --deploy-id <deploy-id>          Deployment ID context for workflow
+                                   execution.
+  --namespace <namespace>          Kubernetes namespace context (defaults to
+                                   "default").
   -h, --help                       display help for command
  
 ```
