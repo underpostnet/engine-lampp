@@ -366,7 +366,10 @@ ${shellExec(`git log | grep Author: | sort -u`, { stdout: true }).split(`\n`).jo
         `${path}/.env`,
         fs
           .readFileSync(`${path}/.env`, 'utf8')
-          .replace(`FIRST_SUPERUSER=admin@example.com`, `FIRST_SUPERUSER=development@underpost.net`)
+          .replace(
+            `FIRST_SUPERUSER=admin@example.com`,
+            `FIRST_SUPERUSER=${process.env.GITHUB_EMAIL || 'development@underpost.net'}`,
+          )
           .replace(`FIRST_SUPERUSER_PASSWORD=changethis`, `FIRST_SUPERUSER_PASSWORD=${password}`)
           .replace(`SECRET_KEY=changethis`, `SECRET_KEY=${password}`)
           .replace(`POSTGRES_DB=app`, `POSTGRES_DB=postgresdb`)
@@ -452,7 +455,7 @@ ${shellExec(`git log | grep Author: | sort -u`, { stdout: true }).split(`\n`).jo
           shellExec(
             `sudo kubectl create secret generic ${secretSelector}` +
               ` --from-file=SECRET_KEY=/home/dd/engine/engine-private/postgresql-password` +
-              ` --from-literal=FIRST_SUPERUSER=development@underpost.net` +
+              ` --from-literal=FIRST_SUPERUSER=${process.env.GITHUB_EMAIL || 'development@underpost.net'}` +
               ` --from-file=FIRST_SUPERUSER_PASSWORD=/home/dd/engine/engine-private/postgresql-password` +
               ` --dry-run=client -o yaml | kubectl apply -f - -n ${namespace}`,
           );
@@ -731,7 +734,7 @@ nvidia/gpu-operator \
       if (fs.existsSync(toPath)) fs.removeSync(toPath);
       shellExec(`node bin/deploy pw-conf ${scriptPath}`);
       shellExec(`kubectl delete deployment playwright-server --ignore-not-found`);
-      while (Underpost.deploy.get('playwright-server').length > 0) {
+      while (Underpost.kubectl.get('playwright-server').length > 0) {
         logger.info(`Waiting for playwright-server deployment to be deleted...`);
         await timer(1000);
       }
@@ -739,13 +742,13 @@ nvidia/gpu-operator \
       const id = 'playwright-server';
       await Underpost.test.statusMonitor(id);
       const nameSpace = 'default';
-      const [pod] = Underpost.deploy.get(id);
+      const [pod] = Underpost.kubectl.get(id);
       const podName = pod.NAME;
       shellExec(`kubectl logs -f ${podName} -n ${nameSpace}`, {
         async: true,
       });
       (async () => {
-        while (!Underpost.deploy.existsContainerFile({ podName, path: fromPath })) {
+        while (!Underpost.kubectl.existsFile({ podName, path: fromPath })) {
           await timer(1000);
           logger.info(`Waiting for file ${fromPath} in pod ${podName}...`);
         }
