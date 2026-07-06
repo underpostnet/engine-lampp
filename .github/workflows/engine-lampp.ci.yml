@@ -67,7 +67,7 @@ jobs:
           if [ -n "${{ github.event.inputs.message }}" ]; then
             LAST_COMMIT_MESSAGE="${{ github.event.inputs.message }}"
           else
-            LAST_COMMIT_MESSAGE=$(cd engine && node bin cmt --changelog-msg --unpush --changelog-no-hash 2>/dev/null || echo "")
+            LAST_COMMIT_MESSAGE=$(cd engine && node bin cmt --changelog-msg --from-n-commit 1 --changelog-no-hash 2>/dev/null || echo "")
           fi
           SHOULD_CD="${{ github.event.inputs.sync }}"
           DEPLOY_TYPE="${{ github.event.inputs.deploy_type }}"
