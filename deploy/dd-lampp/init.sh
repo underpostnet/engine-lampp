@@ -2,44 +2,53 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/../lib/logging.sh"
+source "$SCRIPT_DIR/../lib/github-actions-logging.sh"
 source "$SCRIPT_DIR/../lib/host.sh"
 
 ENGINE_ROOT=/home/dd/engine
 INGRESS_NODE=localhost.localdomain
 
 main() {
-    echo "Starting init deploy"
+    deploy_start "Starting init deploy"
 
     prepare_host "$ENGINE_ROOT"
 
-    run_quiet \
-        "Build dd-lampp configuration" \
-        "Target pod:" \
-        14 \
+    deploy_step "Build dd-lampp configuration" \
         sudo -n -- /bin/bash -lc \
         "cd $ENGINE_ROOT && node bin/build dd-lampp --conf"
 
-    run_quiet \
-        "Deploy dd-lampp production" \
-        "Target pod:" \
-        14 \
-        sudo -n -- /bin/bash -lc \
-        "cd $ENGINE_ROOT && node bin deploy dd-lampp production --kubeadm --gateway-api --ingress-node ${INGRESS_NODE} --sync --build-manifest --image 'underpost/wp:v3.3.0' --versions green --replicas 1"
+    local pod_cmd
+    pod_cmd="$(pod_bootstrap_cmd dd-lampp production), underpost start dd-lampp production --build --run --skip-pull-repo-base"
 
-    run_quiet \
-        "Issue dd-lampp certificates" \
-        "Target pod:" \
-        14 \
+    deploy_step "Deploy dd-lampp production" \
         sudo -n -- /bin/bash -lc \
-        "cd $ENGINE_ROOT && node bin deploy dd-lampp production --cert --kubeadm --gateway-api --ingress-node ${INGRESS_NODE} --disable-update-proxy"
+        "cd $ENGINE_ROOT && node bin deploy dd-lampp production \
+          --versions green \
+          --replicas 1 \
+          --image 'underpost/wp:v3.3.0' \
+          --kubeadm \
+          --gateway-api \
+          --ingress-node ${INGRESS_NODE} \
+          --sync \
+          --build-manifest \
+          --cmd '${pod_cmd}'"
 
-    run_quiet \
-        "Promote dd-lampp deployment" \
-        "Target pod:" \
-        14 \
+    deploy_step "Issue dd-lampp certificates" \
         sudo -n -- /bin/bash -lc \
-        "cd $ENGINE_ROOT && node bin monitor dd-lampp production --ready-deployment --promote --versions green --replicas 1"
+        "cd $ENGINE_ROOT && node bin deploy dd-lampp production \
+          --kubeadm \
+          --gateway-api \
+          --ingress-node ${INGRESS_NODE} \
+          --cert \
+          --disable-update-proxy"
+
+    deploy_step "Promote dd-lampp deployment" \
+        sudo -n -- /bin/bash -lc \
+        "cd $ENGINE_ROOT && node bin monitor dd-lampp production \
+          --ready-deployment \
+          --promote \
+          --versions green \
+          --replicas 1"
 }
 
 main "$@"
