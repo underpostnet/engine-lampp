@@ -6,6 +6,7 @@ const DefaultConf = /**/ {
       '/': {
         client: null,
         directory: '/home/dd/netlify_giancarlobertini',
+        repository: 'env:LAMPP_REPOSITORY_GIANCARLOBERTINI',
         apis: [],
         runtime: 'lampp',
         origins: [],
@@ -28,6 +29,7 @@ const DefaultConf = /**/ {
       '/': {
         client: null,
         directory: '/home/dd/netlify_ayleenbertini',
+        repository: 'env:LAMPP_REPOSITORY_AYLEENBERTINI',
         apis: [],
         runtime: 'lampp',
         origins: [],
