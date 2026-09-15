@@ -52,3 +52,13 @@ packer/images/*/*.iso
 *pub.json
 gitleaks-report.json
 
+# Age private key material. Encrypted SOPS manifests are safe to commit; keys never are.
+**/keys.txt
+**/*.agekey
+*.age.key
+
+# Underpost CLI package staged into a runtime image build context by
+# `node bin/cyberia run-workflow stage-cli`. Build output, never committed.
+/underpost-cli.tgz
+/src/runtime/engine-cyberia/underpost-cli.tgz
+
